@@ -1,0 +1,32 @@
+[
+  {
+    "text": "We need 120 aluminum outdoor chairs for a hotel project in Germany.",
+    "quantity": 120,
+    "country": "Germany",
+    "product_sku": "NOVA-CHAIR-001"
+  },
+  {
+    "text": "Please quote 20 outdoor tables for our restaurant in Italy.",
+    "quantity": 20,
+    "country": "Italy",
+    "product_sku": "NOVA-TABLE-001"
+  },
+  {
+    "text": "We are looking for 10 modular outdoor sofas for a resort in France.",
+    "quantity": 10,
+    "country": "France",
+    "product_sku": "NOVA-SOFA-001"
+  },
+  {
+    "text": "Please send your outdoor furniture catalog.",
+    "expected_error": "quantity"
+  },
+  {
+    "text": "Please quote 100 swimming pools for a site in France.",
+    "expected_error": "product"
+  },
+  {
+    "text": "We need 1000 modular outdoor sofas for a resort in France.",
+    "expected_error": "inventory"
+  }
+]
