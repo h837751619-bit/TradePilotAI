@@ -144,6 +144,16 @@ See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for the full product plan and [
 
 For screenshots and a walkthrough of the inquiry workspace and product catalog, see the [简体中文界面使用指南](docs/USER_GUIDE.zh-CN.md).
 
+## Interface screenshots
+
+### Inquiry workspace
+
+![TradePilot AI inquiry workspace](docs/screenshots/inquiry-workspace.png)
+
+### Product catalog
+
+![TradePilot AI product catalog](docs/screenshots/products-page.png)
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
