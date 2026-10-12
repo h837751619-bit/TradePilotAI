@@ -10,8 +10,16 @@ dist/
 build/
 .pytest_cache/
 .DS_Store
+.idea/
 *.log
 chroma_data/
 mysql_data/
 redis_data/
 *.db
+*.db-*
+*.sqlite
+*.sqlite3
+backups/
+.coverage
+.coverage.*
+coverage.xml

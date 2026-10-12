@@ -15,10 +15,14 @@ class ProductResponse(BaseModel):
     description: str
     material: str
     colors: str
+    match_tags: str
     min_order_quantity: int
     lead_time_days: int
     unit_price_usd: float
     is_active: bool
+    on_hand_quantity: int = 0
+    reserved_quantity: int = 0
+    available_quantity: int = 0
 
 
 class ProductQuery(BaseModel):

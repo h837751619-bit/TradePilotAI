@@ -9,7 +9,7 @@ def test_complete_inquiry_to_approval_api_flow() -> None:
 
     workflow = client.post(
         "/api/workflow/inquiry-to-quote",
-        json={"inquiry": inquiry, "customer_name": "Acme Hotels"},
+        json={"inquiry": inquiry, "customer_name": "Acme Hotels", "selected_sku": "NOVA-CHAIR-001"},
     )
     assert workflow.status_code == 200
     payload = workflow.json()
@@ -26,3 +26,5 @@ def test_complete_inquiry_to_approval_api_flow() -> None:
     assert approval.status_code == 200
     assert approval.json() == {"id": quote_id, "status": "approved"}
     assert client.get("/api/quotes").json()[0]["status"] == "approved"
+    trace = client.get("/api/agent-runs").json()[0]
+    assert trace["steps"][-1] == {"name": "Human approval", "status": "complete"}

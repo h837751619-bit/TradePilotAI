@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
-from sqlalchemy import Integer, String, select
+from sqlalchemy import DateTime, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .db import Base
+from .models import QuoteRecord
 
 
 class Inventory(Base):
@@ -15,6 +18,30 @@ class Inventory(Base):
     sku: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     on_hand_quantity: Mapped[int] = mapped_column(Integer)
     reserved_quantity: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quote_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    sku: Mapped[str] = mapped_column(String(64), index=True)
+    quantity: Mapped[int] = mapped_column(Integer)
+    movement_type: Mapped[str] = mapped_column(String(32), index=True)
+    actor: Mapped[str] = mapped_column(String(120), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InventoryAdjustment(Base):
+    __tablename__ = "inventory_adjustments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sku: Mapped[str] = mapped_column(String(64), index=True)
+    previous_quantity: Mapped[int] = mapped_column(Integer)
+    new_quantity: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(300), default="manual adjustment")
+    actor: Mapped[str] = mapped_column(String(120), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 @dataclass(frozen=True)
@@ -52,3 +79,57 @@ def check_inventory(session: Session, sku: str, requested_quantity: int) -> Inve
     available = record.on_hand_quantity - record.reserved_quantity
     shortfall = max(requested_quantity - available, 0)
     return InventoryCheck(sku, available, requested_quantity, shortfall == 0, shortfall)
+
+
+def reserve_inventory(session: Session, quote_id: int, sku: str, quantity: int, actor: str = "system") -> None:
+    # Serialize all inventory transitions for a quote before checking movement
+    # idempotency. On MySQL this row lock also prevents concurrent duplicate reserves.
+    quote = session.scalar(select(QuoteRecord).where(QuoteRecord.id == quote_id).with_for_update())
+    if quote is None:
+        raise LookupError("Quote not found")
+    existing = session.scalar(select(InventoryMovement).where(InventoryMovement.quote_id == quote_id, InventoryMovement.movement_type == "reserve"))
+    if existing is not None:
+        return
+    record = session.scalar(select(Inventory).where(Inventory.sku == sku).with_for_update())
+    if record is None:
+        raise LookupError(f"Unknown product SKU: {sku}")
+    available = record.on_hand_quantity - record.reserved_quantity
+    if available < quantity:
+        raise ValueError(f"Insufficient inventory: shortfall {quantity - available}")
+    record.reserved_quantity += quantity
+    session.add(InventoryMovement(quote_id=quote_id, sku=sku, quantity=quantity, movement_type="reserve", actor=actor))
+
+
+def deduct_reserved_inventory(session: Session, quote_id: int, actor: str = "system") -> None:
+    quote = session.scalar(select(QuoteRecord).where(QuoteRecord.id == quote_id).with_for_update())
+    if quote is None:
+        raise LookupError("Quote not found")
+    reservation = session.scalar(select(InventoryMovement).where(InventoryMovement.quote_id == quote_id, InventoryMovement.movement_type == "reserve"))
+    if reservation is None:
+        raise LookupError("No inventory reservation found for quote")
+    existing = session.scalar(select(InventoryMovement).where(InventoryMovement.quote_id == quote_id, InventoryMovement.movement_type == "deduct"))
+    if existing is not None:
+        return
+    record = session.scalar(select(Inventory).where(Inventory.sku == reservation.sku).with_for_update())
+    if record is None or record.on_hand_quantity < reservation.quantity or record.reserved_quantity < reservation.quantity:
+        raise ValueError("Inventory reservation is no longer valid")
+    record.on_hand_quantity -= reservation.quantity
+    record.reserved_quantity -= reservation.quantity
+    session.add(InventoryMovement(quote_id=quote_id, sku=reservation.sku, quantity=reservation.quantity, movement_type="deduct", actor=actor))
+
+
+def release_reserved_inventory(session: Session, quote_id: int, actor: str = "system") -> None:
+    quote = session.scalar(select(QuoteRecord).where(QuoteRecord.id == quote_id).with_for_update())
+    if quote is None:
+        raise LookupError("Quote not found")
+    reservation = session.scalar(select(InventoryMovement).where(InventoryMovement.quote_id == quote_id, InventoryMovement.movement_type == "reserve"))
+    if reservation is None:
+        return
+    existing = session.scalar(select(InventoryMovement).where(InventoryMovement.quote_id == quote_id, InventoryMovement.movement_type == "release"))
+    if existing is not None:
+        return
+    record = session.scalar(select(Inventory).where(Inventory.sku == reservation.sku).with_for_update())
+    if record is None or record.reserved_quantity < reservation.quantity:
+        raise ValueError("Inventory reservation is no longer valid")
+    record.reserved_quantity -= reservation.quantity
+    session.add(InventoryMovement(quote_id=quote_id, sku=reservation.sku, quantity=reservation.quantity, movement_type="release", actor=actor))

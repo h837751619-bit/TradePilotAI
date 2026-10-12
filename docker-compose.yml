@@ -1,15 +1,54 @@
 services:
+  database:
+    image: mysql:8.4
+    restart: unless-stopped
+    command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tradepilot}
+      MYSQL_USER: ${MYSQL_USER:-tradepilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in the root .env file}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the root .env file}
+    volumes:
+      - tradepilot_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "${TRADEPILOT_BIND:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     volumes:
-      - tradepilot_data:/app/data
+      - ./data:/data:ro
     environment:
       APP_ENV: docker
-      DATABASE_URL: sqlite:////app/data/tradepilot.db
-      CORS_ORIGINS: http://localhost:8080
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-tradepilot}:${MYSQL_PASSWORD}@database:3306/${MYSQL_DATABASE:-tradepilot}?charset=utf8mb4
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       API_DOCS_ENABLED: "false"
+      AI_PROVIDER: ${AI_PROVIDER:-rules}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_THINK: ${OLLAMA_THINK:-false}
+      OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
+      OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_COMPATIBLE_MODEL: ${OPENAI_COMPATIBLE_MODEL:-gpt-4o-mini}
+      OPENAI_COMPATIBLE_TIMEOUT_SECONDS: ${OPENAI_COMPATIBLE_TIMEOUT_SECONDS:-45}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_TIMEOUT_SECONDS: ${DEEPSEEK_TIMEOUT_SECONDS:-45}
+      KIMI_API_KEY: ${KIMI_API_KEY:-}
+      KIMI_BASE_URL: ${KIMI_BASE_URL:-https://api.moonshot.cn/v1}
+      KIMI_MODEL: ${KIMI_MODEL:-moonshot-v1-8k}
+      KIMI_TIMEOUT_SECONDS: ${KIMI_TIMEOUT_SECONDS:-45}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_USERNAME: ${AUTH_USERNAME:-}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH:-}
+      AUTH_ROLE: ${AUTH_ROLE:-admin}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -20,15 +59,15 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "${TRADEPILOT_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
-  tradepilot_data:
+  tradepilot_mysql_data:

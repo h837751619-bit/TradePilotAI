@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from ..models import Product
 
 
-def search_products(session: Session, q: Optional[str] = None, category: Optional[str] = None, limit: int = 20) -> list[Product]:
-    statement = select(Product).where(Product.is_active.is_(True))
+def search_products(session: Session, q: Optional[str] = None, category: Optional[str] = None, limit: int = 20, include_inactive: bool = False) -> list[Product]:
+    statement = select(Product)
+    if not include_inactive:
+        statement = statement.where(Product.is_active.is_(True))
     if q:
         pattern = f"%{q.lower()}%"
         statement = statement.where(or_(

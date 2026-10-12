@@ -14,7 +14,13 @@ from .workflow import create_quote_from_inquiry
 
 
 def evaluate_dataset(dataset_path: str | Path) -> dict[str, float | int]:
-    cases = json.loads(Path(dataset_path).read_text())
+    dataset = Path(dataset_path)
+    if not dataset.is_absolute() and not dataset.exists():
+        # Resolve paths such as ../data/... relative to the backend directory,
+        # so evaluation behaves consistently from the repository root or backend.
+        backend_root = Path(__file__).resolve().parents[2]
+        dataset = backend_root / dataset
+    cases = json.loads(dataset.read_text())
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     parsed_correct = product_correct = quote_success = failure_detected = 0

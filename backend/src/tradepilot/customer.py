@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -20,6 +22,22 @@ CUSTOMER_SEED = [
     {"company_name": "Acme Hotels", "contact_name": "Emma Rossi", "country": "Germany", "email": "emma@acme-hotels.example"},
     {"company_name": "Nordic Terrace Group", "contact_name": "Lars Jensen", "country": "Italy", "email": "lars@nordic-terrace.example"},
 ]
+
+
+def extract_customer_name(text: str) -> str:
+    """Extract a company name from common inquiry wording when available."""
+    patterns = (
+        r"\b([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Za-z0-9&.'-]*){0,4})\s+(?:needs|requires|requests|is looking for)\b",
+        r"\bfor\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})\b",
+        r"\bfrom\s+([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})\b",
+        r"\b(?:customer|client|company)\s*[:\-]\s*([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})\b",
+        r"\b([A-Z][A-Za-z0-9&.'-]*(?:\s+[A-Z][A-Za-z0-9&.'-]*){0,4})\s+(?:needs|requires|requests|is looking for)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return " ".join(match.group(1).split()).strip(".,;:")
+    return ""
 
 
 def seed_customers(session: Session) -> None:

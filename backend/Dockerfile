@@ -7,7 +7,7 @@ COPY scripts ./scripts
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY entrypoint.sh ./entrypoint.sh
-RUN pip install --no-cache-dir fastapi pydantic-settings sqlalchemy alembic uvicorn
+RUN pip install --no-cache-dir .
 
 ENV PYTHONPATH=/app/src
 EXPOSE 8000
