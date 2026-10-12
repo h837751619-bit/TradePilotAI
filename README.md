@@ -142,6 +142,8 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for authentication, Docker, Ollama, productio
 
 See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for the full product plan and [docs/superpowers/specs/2026-09-29-foundation-design.md](docs/superpowers/specs/2026-09-29-foundation-design.md) for the first implementation specification.
 
+For screenshots and a walkthrough of the inquiry workspace and product catalog, see the [简体中文界面使用指南](docs/USER_GUIDE.zh-CN.md).
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

@@ -1609,3 +1609,9 @@ Ruff：All checks passed
 - [x] 让 Alembic `upgrade head` 和 `current` 共用显式 MySQL `DATABASE_URL`，避免 `current` 意外读取示例连接。
 - [x] 复核 Git 忽略规则、Compose 配置与敏感文件候选；未发现已跟踪的本地密钥或数据库文件。
 - [x] 复核结果：后端现有虚拟环境测试、Ruff、前端类型检查/生产构建及 Compose 配置检查通过；本机 Python 3.12 未安装 pytest，无法在该解释器下本地重跑测试。CI 使用 Python 3.12 并负责发布前验证。
+
+## 66. 2026-10-12：增加中文界面使用指南
+
+- [x] 将询盘工作台与产品库截图归档到 `docs/screenshots/`。
+- [x] 新增中文界面指南，说明询盘解析、产品选择后生成报价、产品搜索/停用项显示、模型语言选择及部署配置注意事项。
+- [x] 在 README 添加使用指南入口；本次变更仅涉及文档和截图。
