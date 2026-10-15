@@ -1951,3 +1951,8 @@ Ruff：All checks passed
 - [x] `git diff --check` 通过，未发现已跟踪文件中的常见 `sk-...` API Key 形态。
 - [x] 确认 MIT License 和 README 中的部署、产品库、Qdrant 说明均存在。
 - [x] 已完成 `git add/commit/push`；提交 `92c22e1` 已推送到 `origin/main`（`https://github.com/h837751619-bit/TradePilotAI.git`）。
+
+## 106. 2026-10-15：README 仓库结构同步
+
+- [x] 对照 GitHub 实际项目结构更新 README 的 `Repository structure`，补充截图目录、部署文档、进度记录、Docker Compose 和 MIT License。
+- [x] 保留缓存、数据库、本地环境文件等未跟踪目录不出现在开源仓库结构说明中。

@@ -17,11 +17,15 @@ This repository contains a portfolio-ready MVP using simulated Nova Outdoor data
 ## Repository structure
 
 ```text
-backend/        FastAPI, SQLAlchemy, MySQL/SQLite, Alembic, tests
-frontend/       Vue 3, TypeScript, Vite workbench
-data/           Evaluation datasets
-docs/           Project plan and engineering specifications
-docker-compose.yml
+backend/              FastAPI, SQLAlchemy, MySQL/SQLite, Alembic, tests
+frontend/             Vue 3, TypeScript, Vite workbench
+data/                 RAG and workflow evaluation datasets
+docs/                 Project plan, user guide, and README screenshots
+docs/screenshots/     Inquiry workspace and product catalog images
+DEPLOYMENT.md         Docker, MySQL, Qdrant, AI provider deployment guide
+PROJECT_PROGRESS.md   Implementation progress and issue-resolution log
+docker-compose.yml    Local MySQL, Qdrant, backend, and frontend stack
+LICENSE               MIT license
 ```
 
 ## Local development
