@@ -1956,3 +1956,10 @@ Ruff：All checks passed
 
 - [x] 对照 GitHub 实际项目结构更新 README 的 `Repository structure`，补充截图目录、部署文档、进度记录、Docker Compose 和 MIT License。
 - [x] 保留缓存、数据库、本地环境文件等未跟踪目录不出现在开源仓库结构说明中。
+
+## 107. 2026-10-15：README 功能与配置说明同步
+
+- [x] 修正 README 的多语言能力描述，明确支持英文、中文和意大利语询盘。
+- [x] 补充当前 30 个演示产品、MySQL/Qdrant 持久化、规则引擎默认值和语义检索默认关闭说明。
+- [x] 补充 AI Provider、AI 设置、RAG Playground、库存调整和 RAG 评测接口说明。
+- [x] 补充 RAG 数据集、可选 Cross-Encoder Reranker 和其默认关闭行为说明。

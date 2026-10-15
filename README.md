@@ -2,7 +2,7 @@
 
 AI Export Sales Agent for B2B Cross-Border Trade.
 
-TradePilot turns an English B2B export inquiry into a structured sales workflow:
+TradePilot turns an English, Chinese, or Italian B2B export inquiry into a structured sales workflow:
 
 ```text
 Inquiry → Requirement Parsing → Customer Lookup → Product Search
@@ -12,7 +12,7 @@ Inquiry → Requirement Parsing → Customer Lookup → Product Search
 
 ## Current status
 
-This repository contains a portfolio-ready MVP using simulated Nova Outdoor data. It is designed for local development and Docker demonstration. It does not send real emails, connect to a production ERP, or make autonomous commercial commitments.
+This repository contains a portfolio-ready MVP using simulated Nova Outdoor data and a 30-product demo catalog. It is designed for local development and Docker demonstration. It does not send real emails, connect to a production ERP, or make autonomous commercial commitments.
 
 ## Repository structure
 
@@ -65,7 +65,7 @@ docker compose up --build
 
 Do not overwrite an existing `.env` containing your local settings. Keep `.env` private; it is excluded by `.gitignore`.
 
-The local demo frontend is available at `http://localhost:8080`; the API is available at `http://localhost:8000`. Both ports bind to localhost by default. Docker runs MySQL 8.4 on a persistent named volume and applies Alembic migrations before starting FastAPI. Docker defaults to the rules AI provider; see [DEPLOYMENT.md](DEPLOYMENT.md) for database setup, backups, and AI configuration.
+The local demo frontend is available at `http://localhost:8080`; the API is available at `http://localhost:8000`. Both ports bind to localhost by default. Docker runs MySQL 8.4 and Qdrant on persistent named volumes and applies Alembic migrations before starting FastAPI. Docker defaults to the rules AI provider and keeps semantic retrieval disabled until explicitly enabled; see [DEPLOYMENT.md](DEPLOYMENT.md) for database setup, backups, and AI configuration.
 
 ## Database
 
@@ -96,7 +96,9 @@ enabled. Do not delete the MySQL or Qdrant volumes when applying catalog changes
 |---|---|---|
 | GET | `/health` | Service health |
 | GET | `/api/products` | Product search |
+| PATCH | `/api/products/{sku}/inventory` | Adjust product stock |
 | GET | `/api/customers` | Customer lookup |
+| POST | `/api/customers` | Create a customer profile |
 | POST | `/api/workflow/inquiry-to-quote` | Run inquiry workflow |
 | GET | `/api/quotes` | List saved quotes |
 | GET | `/api/quotes/{id}` | Quote detail, risk, email draft, and approval history |
@@ -105,8 +107,13 @@ enabled. Do not delete the MySQL or Qdrant volumes when applying catalog changes
 | POST | `/api/auth/refresh` | Rotate an access token |
 | POST | `/api/auth/logout` | Revoke a refresh token |
 | GET/POST | `/api/users` | Admin user management |
+| GET/POST | `/api/ai/providers` | Read or switch AI provider |
+| GET/PATCH | `/api/settings/ai` | Read or update AI runtime settings |
 | GET | `/api/agent-runs` | Read workflow traces |
-| GET | `/api/evaluation` | Read evaluation metrics |
+| POST | `/api/rag/playground` | Test product retrieval without creating a quote |
+| GET | `/api/evaluation/rag` | Read RAG evaluation metrics |
+| POST | `/api/evaluation/rag/run` | Run and persist a RAG evaluation |
+| GET | `/api/evaluation/rag/history` | Read saved RAG evaluations |
 
 ## Evaluation
 
@@ -115,7 +122,7 @@ cd backend
 PYTHONPATH=src .venv/bin/python scripts/evaluate.py
 ```
 
-The deterministic dataset covers successful inquiries plus missing quantity, unknown product, and insufficient inventory cases.
+The deterministic workflow dataset covers successful inquiries plus missing quantity, unknown product, and insufficient inventory cases. The RAG dataset covers English, Chinese, Italian, and Spanish paraphrases and can be explored interactively through the RAG Playground page or the RAG evaluation endpoints.
 
 ## Verification
 
@@ -150,7 +157,8 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for authentication, Docker, Ollama, productio
 ## Known limitations
 
 - SQLite remains the default for direct local development; Docker Compose uses MySQL 8.4.
-- Inquiry parsing supports the rules engine and optional configured model providers; product retrieval supports deterministic matching plus optional Qdrant semantic search.
+- Inquiry parsing supports the rules engine and optional configured model providers; product retrieval supports deterministic matching plus optional Qdrant semantic search and reranking.
+- The optional Cross-Encoder reranker is disabled by default; enabling `RERANKER_ENABLED=true` downloads the configured model on first use.
 - Email generation creates drafts only.
 - Multi-tenant isolation, ERP/CRM integration, and real email delivery are not implemented.
 
