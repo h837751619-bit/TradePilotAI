@@ -15,11 +15,35 @@ class ProductDocument:
     metadata: dict[str, str | int | float]
 
 
+def _search_synonyms(product: Product) -> list[str]:
+    """Add stable domain vocabulary without requiring an LLM for every product."""
+    haystack = f"{product.name} {product.category} {product.description} {product.match_tags}".lower()
+    synonyms: list[str] = []
+    groups = (
+        (("chair", "seat", "seating"), "outdoor seating, patio chair, hotel chair, commercial seating, weatherproof seating, garden chair"),
+        (("table", "dining surface"), "outdoor dining table, patio table, terrace table, restaurant table, dining surface"),
+        (("sofa", "couch", "lounge"), "outdoor sofa, modular lounge seating, hospitality lounge, patio couch"),
+        (("umbrella", "parasol", "shade"), "commercial patio umbrella, outdoor shade, terrace parasol"),
+        (("set", "dining set"), "outdoor furniture set, patio set, balcony dining set, hospitality furniture package"),
+    )
+    for needles, value in groups:
+        if any(needle in haystack for needle in needles):
+            synonyms.append(value)
+    if any(term in haystack for term in ("aluminum", "aluminium", "metal")):
+        synonyms.append("aluminum aluminium metal outdoor furniture")
+    if any(term in haystack for term in ("hotel", "hospitality", "restaurant", "resort", "commercial")):
+        synonyms.append("hotel restaurant resort cafe hospitality commercial project")
+    return synonyms
+
+
 def build_product_document(product: Product) -> ProductDocument:
+    synonyms = ", ".join(_search_synonyms(product))
     text = (
-        f"{product.name}. SKU: {product.sku}. Category: {product.category}. "
+        f"Product name: {product.name}. SKU: {product.sku}. Category: {product.category}. "
         f"Description: {product.description} Material: {product.material}. "
-        f"Colors: {product.colors}. MOQ: {product.min_order_quantity}. "
+        f"Colors: {product.colors}. Search tags: {product.match_tags}. "
+        f"Search synonyms and use cases: {synonyms}. "
+        f"MOQ: {product.min_order_quantity}. "
         f"Lead time: {product.lead_time_days} days. Base price: USD {product.unit_price_usd:.2f}."
     )
     return ProductDocument(

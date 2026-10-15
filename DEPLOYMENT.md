@@ -63,13 +63,40 @@ docker compose up --build
 
 Docker 演示默认只监听本机 `127.0.0.1`，前端端口为 `8080`、后端端口为 `8000`；认证关闭、API 文档关闭，AI 使用规则引擎，不依赖容器内无法访问的本机 Ollama。前端通过 Nginx 将 `/api` 转发给后端，不需要设置 `VITE_API_BASE`。
 
+### 可选：本地 Hugging Face 产品语义检索
+
+Compose 同时运行 Qdrant 向量服务，其数据持久化在 `tradepilot_qdrant_data` 卷中。要启用语义检索，在根目录 `.env` 中设置：
+
+```env
+SEMANTIC_SEARCH_ENABLED=true
+EMBEDDING_PROVIDER=huggingface
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
+首次使用时，后端通过 FastEmbed 从 Hugging Face 下载多语言模型权重并保存在 `tradepilot_embedding_cache` 卷中；无需按次支付 embedding API 费用，但下载需要网络，运行会占用本机 CPU 和内存。具体模型的许可证、使用范围及资源需求应以该模型页面为准。重新构建并启动后，管理员调用 `POST /api/products/rebuild-semantic-index` 将现有产品入库；关闭认证的本机演示环境可直接调用。产品更新与停用会自动同步索引。更换模型后需重新调用该接口。接口返回 `indexed_products` 数量。询盘分析返回 `retrieval_mode`；`semantic` 表示语义召回参与匹配，`rules_fallback` 表示语义服务故障，回退至规则匹配。向量库只存产品检索资料；价格、库存、报价仍从 MySQL 实时读取。
+
+如要用 Ollama 的 embedding 模型，设置 `EMBEDDING_PROVIDER=ollama` 和 `EMBEDDING_MODEL` 为已安装的 embedding 模型名，再重建索引。`qwen3:8b` 是聊天模型，不是这里默认使用的 embedding 模型。直接运行后端时可执行 `pip install -e '.[embeddings]'`，并确保 `QDRANT_URL` 指向本机 Qdrant。
+
+`RAG_EXPLANATIONS_ENABLED=true` 时，询盘解析完成后会再调用一次当前聊天模型，为检索到的候选产品选择证据字段。响应中的证据值由后端重新从 MySQL 产品记录读取，并据此构造前端显示的解释；模型原文仅作为审计字段返回。未知 SKU、未知字段会被丢弃，模型失败时返回规则解释并将 `explanation_mode` 标记为 `rules_fallback`。使用在线模型时，这次调用会产生相应服务商的 API 用量；可设置为 `false` 关闭。
+
 需要使用宿主机 Ollama 时，在根目录 `.env` 中设置：
 
 ```env
 AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen3:8b
+OLLAMA_TAG_TIMEOUT_SECONDS=90
 ```
+
+### AI 配置的持久化规则
+
+Provider、Base URL、模型、超时和 API Key 的正式配置来源是根目录 `.env`（或生产平台的 Secret 注入），不是 MySQL。`docker-compose.yml` 会在每次创建后端容器时把这些变量传入后端，因此容器重启后仍会恢复。修改后执行：
+
+```bash
+docker compose up -d --build backend frontend
+```
+
+前端“AI 配置”页的保存操作只应用到当前后端进程，API Key 不会写入数据库、不会回显，重启后会回到 `.env` 的值。这样可以避免 Web 页面把密钥写进业务数据库；要长期保存配置，请编辑本机未提交的 `.env` 或使用 Docker/Kubernetes Secret。切换当前 Provider 后也建议将 `AI_PROVIDER` 同步写入 `.env`，否则重启会按环境变量重新初始化。
 
 也可以使用 OpenAI 兼容的在线聊天接口（例如 OpenAI 或提供兼容接口的其他服务）。在根目录 `.env` 或 `backend/.env` 中配置：
 

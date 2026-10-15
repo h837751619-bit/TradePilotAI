@@ -30,3 +30,10 @@ def test_parser_recognizes_additional_export_destinations() -> None:
 
     assert norway.destination_country == "Norway"
     assert australia.destination_country == "Australia"
+
+
+def test_parser_normalizes_multilingual_and_domain_synonyms() -> None:
+    chinese = parse_inquiry("中国酒店需要 50 把耐候户外座椅。")
+    italian = parse_inquiry("Servono 20 tavoli rotondi per un ristorante.")
+    assert "outdoor chair" in chinese.product_keywords
+    assert "outdoor table" in italian.product_keywords

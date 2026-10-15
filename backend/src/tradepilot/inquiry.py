@@ -45,6 +45,43 @@ COUNTRIES = (
 )
 PROJECT_TYPES = ("hotel", "restaurant", "resort", "cafe", "commercial")
 
+INQUIRY_ALIASES = (
+    ("weatherproof seating", "outdoor chair"),
+    ("weather-resistant dining surfaces", "outdoor table"),
+    ("dining surfaces", "outdoor table"),
+    ("round dining surfaces", "outdoor table"),
+    ("lounge units", "outdoor sofa"),
+    ("modular hospitality lounge", "outdoor sofa"),
+    ("outdoor seating", "outdoor chair"),
+    ("patio seating", "outdoor chair"),
+    ("commercial seating", "outdoor chair"),
+    ("stackable outdoor seats", "outdoor chair"),
+    ("outdoor seats", "outdoor chair"),
+    ("metal seats", "outdoor chair"),
+    ("户外椅", "outdoor chair"),
+    ("户外座椅", "outdoor chair"),
+    ("dining set", "furniture set"),
+    ("balcony set", "furniture set"),
+    ("furniture package", "furniture set"),
+    ("couch", "outdoor sofa"),
+    ("parasol", "patio umbrella"),
+    ("sedute", "outdoor chair"),
+    ("sedia", "outdoor chair"),
+    ("sedie", "outdoor chair"),
+    ("tavoli", "outdoor table"),
+    ("tavolo", "outdoor table"),
+    ("sofá", "outdoor sofa"),
+    ("sofa", "outdoor sofa"),
+    ("divani", "outdoor sofa"),
+    ("座椅", "outdoor chair"),
+    ("椅子", "outdoor chair"),
+    ("桌子", "outdoor table"),
+    ("餐桌", "outdoor table"),
+    ("沙发", "outdoor sofa"),
+    ("家具组合", "furniture set"),
+    ("雨伞", "patio umbrella"),
+)
+
 
 def parse_inquiry(text: str) -> InquiryRequirements:
     normalized = " ".join(text.split())
@@ -59,6 +96,9 @@ def parse_inquiry(text: str) -> InquiryRequirements:
     country = next((country for country in COUNTRIES if country.lower() in lower_text), None)
     project_type = next((project for project in PROJECT_TYPES if project in lower_text), None)
     keywords = [phrase for phrase in PRODUCT_PHRASES + MATERIALS if phrase in lower_text]
+    for alias, canonical in INQUIRY_ALIASES:
+        if alias in lower_text and canonical not in keywords:
+            keywords.append(canonical)
     budget_match = re.search(r"(?:budget|under|less than|up to)\s*[:=]?\s*\$?\s*([\d,]+(?:\.\d+)?)", lower_text)
     lead_match = re.search(r"(?:within|no later than|in)\s+(\d+)\s+days?", lower_text)
     budget = float(budget_match.group(1).replace(",", "")) if budget_match else None

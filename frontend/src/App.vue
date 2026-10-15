@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { approveQuote as approveQuoteApi, cancelQuote as cancelQuoteApi, createCustomer, createProduct, createUser, deleteCustomer, deleteProduct, fetchAgentRuns, fetchAIProviders, fetchAuthStatus, fetchCustomerQuotes, fetchCustomers, fetchEvaluation, fetchProductInventoryMovements, fetchQuoteDetail, fetchQuotes, fetchUsers, getAuthRole, getAuthToken, login, logout as logoutSession, runInquiryWorkflow, searchProducts, setAIProvider, suggestProductTags, updateCustomer, updateProduct, updateProductInventory, updateUser } from './api'
-import type { AgentRun, AIProviderId, CustomerRecord, EvaluationMetrics, InventoryMovement, QuoteDetail, QuoteRecord, UserRecord } from './api'
+import { approveQuote as approveQuoteApi, cancelQuote as cancelQuoteApi, createCustomer, createProduct, createUser, deleteCustomer, deleteProduct, fetchAgentRuns, fetchAIDiagnostics, fetchAIProviders, fetchAISettings, fetchAuthStatus, fetchCustomerQuotes, fetchCustomers, fetchEmbeddingJob, fetchEmbeddingJobs, fetchEmbeddingSettings, fetchEvaluation, fetchProductInventoryMovements, fetchQuoteDetail, fetchQuotes, fetchRagEvaluationHistory, fetchUsers, getAuthRole, getAuthToken, login, logout as logoutSession, runInquiryWorkflow, runRagEvaluation, runRagPlayground, searchProducts, setAIProvider, suggestProductTags, switchEmbeddingProfile, testAIConnection, updateAISettings, updateCustomer, updateProduct, updateProductInventory, updateUser } from './api'
+import type { AgentRun, AIDiagnostics, AIProviderId, AISettings, CustomerRecord, EmbeddingSettings, EvaluationMetrics, InventoryMovement, QuoteDetail, QuoteRecord, RagEvaluationMetrics, RagPlaygroundResult, UserRecord } from './api'
 import type { Product, QuoteDraft } from './types'
 
 const inquiry = ref('We need 120 aluminum outdoor chairs for a hotel project in Germany.')
@@ -17,6 +17,17 @@ const quoteDetail = ref<QuoteDetail | null>(null)
 const quoteDetailLoading = ref(false)
 const agentRuns = ref<AgentRun[]>([])
 const evaluation = ref<EvaluationMetrics | null>(null)
+const ragEvaluation = ref<RagEvaluationMetrics | null>(null)
+const ragEvaluationMode = ref<RagEvaluationMetrics['mode']>('semantic')
+const ragEvaluationLoading = ref(false)
+const ragEvaluationHistory = ref<RagEvaluationMetrics[]>([])
+const ragHistoryFilter = ref<'all' | 'rules' | 'semantic'>('all')
+const ragPlaygroundInquiry = ref('We need 50 weatherproof seats for a hotel project in China.')
+const ragPlaygroundMode = ref<'rules' | 'semantic'>('semantic')
+const ragPlaygroundTopK = ref(5)
+const ragPlaygroundThreshold = ref(0.45)
+const ragPlaygroundLoading = ref(false)
+const ragPlaygroundResult = ref<RagPlaygroundResult | null>(null)
 const customers = ref<CustomerRecord[]>([])
 const customerSearch = ref('')
 const selectedCustomer = ref<CustomerRecord | null>(null)
@@ -46,10 +57,25 @@ const locale = ref<'zh' | 'en' | 'it'>('zh')
 const aiProvider = ref<AIProviderId>('rules')
 const aiProviderOptions = ref<{ id: AIProviderId; name: string; model?: string; available: boolean }[]>([])
 const aiProviderLoading = ref(false)
+const aiSettings = ref<AISettings | null>(null)
+const aiDiagnostics = ref<AIDiagnostics | null>(null)
+const aiDiagnosticsLoading = ref(false)
+const aiConfigProvider = ref<AIProviderId>('ollama')
+const aiConfigForm = ref({ base_url: '', model: '', timeout_seconds: 30, api_key: '' })
+const aiConfigSaving = ref(false)
+const aiTestLoading = ref(false)
+const aiTestStatus = ref('')
+const embeddingSettings = ref<EmbeddingSettings | null>(null)
+const embeddingLoading = ref(false)
+const embeddingStatus = ref('')
+const embeddingJobs = ref<Awaited<ReturnType<typeof fetchEmbeddingJobs>>>({ items: [], total: 0, limit: 6, offset: 0 })
+const embeddingJobPage = ref(0)
+const embeddingJobPageSize = 6
 const approvalLoading = ref(false)
 const cancelLoading = ref(false)
 const operatorId = 'jordan-davis'
 const authEnabled = ref(false)
+const authReady = ref(false)
 const authToken = ref(getAuthToken())
 const authLoading = ref(false)
 const authError = ref('')
@@ -61,6 +87,9 @@ const usersLoading = ref(false)
 const userSaving = ref(false)
 const userFormOpen = ref(false)
 const userForm = ref({ username: '', password: '', role: 'viewer' as UserRecord['role'] })
+const passwordEditingUserId = ref<number | null>(null)
+const passwordSaving = ref(false)
+const passwordForm = ref({ password: '', confirm: '' })
 const userError = ref('')
 const aiStatus = ref('idle')
 const quote = ref<QuoteDraft>({
@@ -71,16 +100,16 @@ const quote = ref<QuoteDraft>({
   status: 'pending_selection',
 })
 
-const navKeys = ['inquiryWorkspace', 'products', 'quotes', 'agentTrace', 'customers', 'users'] as const
+const navKeys = ['inquiryWorkspace', 'products', 'quotes', 'agentTrace', 'ragPlayground', 'customers', 'aiSettings', 'users'] as const
 const initialNav = window.location.hash.slice(1) as (typeof navKeys)[number]
 const activeNav = ref<(typeof navKeys)[number]>(navKeys.includes(initialNav) ? initialNav : 'inquiryWorkspace')
 const translations = {
-  zh: { inquiryWorkspace: '询盘工作台', products: '产品库', quotes: '报价单', agentTrace: 'Agent 追踪', salesOps: '销售运营', inquiryTitle: '询盘工作台', inquiry: '客户询盘', inquiryHint: '粘贴客户询盘，开始工作流。', new: '新建', detected: '已识别英语', edited: '刚刚编辑', analyze: '运行分析', requirements: '提取的需求', requirementsHint: '从客户消息中结构化提取。', complete: '已完成', quantity: '数量', destination: '目的地', project: '项目类型', signals: '产品信号', hotel: '酒店项目', matches: '产品匹配', matchesHint: '从产品知识库检索。', found: '个结果', search: '搜索', loading: '正在加载产品目录…', quote: '报价草稿', quoteHint: '选择产品后生成正式报价。', selected: '已选产品', unitPrice: '单价', discount: '批量折扣', total: '预计总价', approval: '需要人工审批', approvalHint: '折扣报价发送前必须审核。', selectProduct: '请先选择产品', selectProductHint: '选择产品后才会生成报价单。', approved: '报价已批准', approve: '批准报价', activity: 'Agent 活动', activityHint: '透明的工作流追踪。', operational: '系统运行正常', demo: '演示工作区', parsed: '询盘已解析', searched: '产品知识已搜索', checked: '库存与价格已检查', waiting: '等待人工审批', next: '需要下一步操作', live: '实时', unit: '件', projectHotel: '酒店项目', aluminumChair: '铝制 · 户外椅', english: '中文', quoteReview: '报价审核', customer: '客户', sku: 'SKU', status: '状态', action: '操作', refresh: '刷新', noQuotes: '暂无报价', reviewHint: '查看已生成的客户报价。' },
-  en: { inquiryWorkspace: 'Inquiry Workspace', products: 'Products', quotes: 'Quotes', agentTrace: 'Agent Trace', salesOps: 'SALES OPERATIONS', inquiryTitle: 'Inquiry workspace', inquiry: 'Customer inquiry', inquiryHint: 'Paste an incoming inquiry to start the workflow.', new: 'NEW', detected: 'English detected', edited: 'Last edited just now', analyze: 'Run analysis', requirements: 'Extracted requirements', requirementsHint: 'Structured from the customer message.', complete: 'COMPLETE', quantity: 'QUANTITY', destination: 'DESTINATION', project: 'PROJECT TYPE', signals: 'PRODUCT SIGNALS', hotel: 'Hotel project', matches: 'Product matches', matchesHint: 'Retrieved from the product knowledge base.', found: 'FOUND', search: 'Search', loading: 'Loading product catalog…', quote: 'Quote draft', quoteHint: 'Select a product to generate the formal quote.', selected: 'SELECTED PRODUCT', unitPrice: 'Unit price', discount: 'Volume discount', total: 'Estimated total', approval: 'Human approval required', approvalHint: 'Discounted quote must be reviewed before sending.', selectProduct: 'Select a product first', selectProductHint: 'A quote is generated only after product selection.', approved: 'Quote approved', approve: 'Approve quote', activity: 'Agent activity', activityHint: 'Transparent workflow trace.', operational: 'System operational', demo: 'Demo workspace', parsed: 'Inquiry parsed', searched: 'Product knowledge searched', checked: 'Inventory and pricing checked', waiting: 'Awaiting human approval', next: 'Next action required', live: 'LIVE', unit: 'units', projectHotel: 'Hotel project', aluminumChair: 'Aluminum · Outdoor chair', english: 'English', quoteReview: 'Quote review', customer: 'Customer', sku: 'SKU', status: 'Status', action: 'Action', refresh: 'Refresh', noQuotes: 'No quotes yet', reviewHint: 'Review previously generated customer quotations.' },
-  it: { inquiryWorkspace: 'Area richieste', products: 'Prodotti', quotes: 'Preventivi', agentTrace: 'Traccia Agent', salesOps: 'OPERAZIONI VENDITE', inquiryTitle: 'Area richieste', inquiry: 'Richiesta cliente', inquiryHint: 'Incolla una richiesta per avviare il flusso.', new: 'NUOVA', detected: 'Inglese rilevato', edited: 'Modificato ora', analyze: 'Avvia analisi', requirements: 'Requisiti estratti', requirementsHint: 'Strutturati dal messaggio del cliente.', complete: 'COMPLETATO', quantity: 'QUANTITÀ', destination: 'DESTINAZIONE', project: 'TIPO PROGETTO', signals: 'SEGNALI PRODOTTO', hotel: 'Progetto alberghiero', matches: 'Prodotti compatibili', matchesHint: 'Recuperati dalla knowledge base prodotti.', found: 'TROVATI', search: 'Cerca', loading: 'Caricamento catalogo…', quote: 'Bozza preventivo', quoteHint: 'Seleziona un prodotto per generare il preventivo.', selected: 'PRODOTTO SELEZIONATO', unitPrice: 'Prezzo unitario', discount: 'Sconto volume', total: 'Totale stimato', approval: 'Approvazione richiesta', approvalHint: 'Il preventivo scontato deve essere approvato.', selectProduct: 'Seleziona prima un prodotto', selectProductHint: 'Il preventivo viene generato dopo la selezione.', approved: 'Preventivo approvato', approve: 'Approva preventivo', activity: 'Attività Agent', activityHint: 'Traccia trasparente del flusso.', operational: 'Sistema operativo', demo: 'Area demo', parsed: 'Richiesta analizzata', searched: 'Ricerca prodotti completata', checked: 'Scorte e prezzi verificati', waiting: 'In attesa di approvazione', next: 'Azione richiesta', live: 'LIVE', unit: 'unità', projectHotel: 'Progetto alberghiero', aluminumChair: 'Alluminio · Sedia da esterno', english: 'Italiano', quoteReview: 'Revisione preventivi', customer: 'Cliente', sku: 'SKU', status: 'Stato', action: 'Azione', refresh: 'Aggiorna', noQuotes: 'Nessun preventivo', reviewHint: 'Rivedi i preventivi generati.' },
+  zh: { inquiryWorkspace: '询盘工作台', products: '产品库', quotes: '报价单', agentTrace: 'Agent 追踪', ragPlayground: 'RAG 实验室', aiSettings: 'AI 配置', salesOps: '销售运营', inquiryTitle: '询盘工作台', inquiry: '客户询盘', inquiryHint: '粘贴客户询盘，开始工作流。', new: '新建', detected: '已识别英语', edited: '刚刚编辑', analyze: '运行分析', requirements: '提取的需求', requirementsHint: '从客户消息中结构化提取。', complete: '已完成', quantity: '数量', destination: '目的地', project: '项目类型', signals: '产品信号', hotel: '酒店项目', matches: '产品匹配', matchesHint: '从产品知识库检索。', found: '个结果', search: '搜索', loading: '正在加载产品目录…', quote: '报价草稿', quoteHint: '选择产品后生成正式报价。', selected: '已选产品', unitPrice: '单价', discount: '批量折扣', total: '预计总价', approval: '需要人工审批', approvalHint: '折扣报价发送前必须审核。', selectProduct: '请先选择产品', selectProductHint: '选择产品后才会生成报价单。', approved: '报价已批准', approve: '批准报价', activity: 'Agent 活动', activityHint: '透明的工作流追踪。', operational: '系统运行正常', demo: '演示工作区', parsed: '询盘已解析', searched: '产品知识已搜索', checked: '库存与价格已检查', waiting: '等待人工审批', next: '需要下一步操作', live: '实时', unit: '件', projectHotel: '酒店项目', aluminumChair: '铝制 · 户外椅', english: '中文', quoteReview: '报价审核', customer: '客户', sku: 'SKU', status: '状态', action: '操作', refresh: '刷新', noQuotes: '暂无报价', reviewHint: '查看已生成的客户报价。' },
+  en: { inquiryWorkspace: 'Inquiry Workspace', products: 'Products', quotes: 'Quotes', agentTrace: 'Agent Trace', ragPlayground: 'RAG Playground', aiSettings: 'AI Settings', salesOps: 'SALES OPERATIONS', inquiryTitle: 'Inquiry workspace', inquiry: 'Customer inquiry', inquiryHint: 'Paste an incoming inquiry to start the workflow.', new: 'NEW', detected: 'English detected', edited: 'Last edited just now', analyze: 'Run analysis', requirements: 'Extracted requirements', requirementsHint: 'Structured from the customer message.', complete: 'COMPLETE', quantity: 'QUANTITY', destination: 'DESTINATION', project: 'PROJECT TYPE', signals: 'PRODUCT SIGNALS', hotel: 'Hotel project', matches: 'Product matches', matchesHint: 'Retrieved from the product knowledge base.', found: 'FOUND', search: 'Search', loading: 'Loading product catalog…', quote: 'Quote draft', quoteHint: 'Select a product to generate the formal quote.', selected: 'SELECTED PRODUCT', unitPrice: 'Unit price', discount: 'Volume discount', total: 'Estimated total', approval: 'Human approval required', approvalHint: 'Discounted quote must be reviewed before sending.', selectProduct: 'Select a product first', selectProductHint: 'A quote is generated only after product selection.', approved: 'Quote approved', approve: 'Approve quote', activity: 'Agent activity', activityHint: 'Transparent workflow trace.', operational: 'System operational', demo: 'Demo workspace', parsed: 'Inquiry parsed', searched: 'Product knowledge searched', checked: 'Inventory and pricing checked', waiting: 'Awaiting human approval', next: 'Next action required', live: 'LIVE', unit: 'units', projectHotel: 'Hotel project', aluminumChair: 'Aluminum · Outdoor chair', english: 'English', quoteReview: 'Quote review', customer: 'Customer', sku: 'SKU', status: 'Status', action: 'Action', refresh: 'Refresh', noQuotes: 'No quotes yet', reviewHint: 'Review previously generated customer quotations.' },
+  it: { inquiryWorkspace: 'Area richieste', products: 'Prodotti', quotes: 'Preventivi', agentTrace: 'Traccia Agent', ragPlayground: 'Laboratorio RAG', aiSettings: 'Configurazione AI', salesOps: 'OPERAZIONI VENDITE', inquiryTitle: 'Area richieste', inquiry: 'Richiesta cliente', inquiryHint: 'Incolla una richiesta per avviare il flusso.', new: 'NUOVA', detected: 'Inglese rilevato', edited: 'Modificato ora', analyze: 'Avvia analisi', requirements: 'Requisiti estratti', requirementsHint: 'Strutturati dal messaggio del cliente.', complete: 'COMPLETATO', quantity: 'QUANTITÀ', destination: 'DESTINAZIONE', project: 'TIPO PROGETTO', signals: 'SEGNALI PRODOTTO', hotel: 'Progetto alberghiero', matches: 'Prodotti compatibili', matchesHint: 'Recuperati dalla knowledge base prodotti.', found: 'TROVATI', search: 'Cerca', loading: 'Caricamento prodotti…', quote: 'Bozza preventivo', quoteHint: 'Seleziona un prodotto per generare il preventivo.', selected: 'PRODOTTO SELEZIONATO', unitPrice: 'Prezzo unitario', discount: 'Sconto volume', total: 'Totale stimato', approval: 'Approvazione richiesta', approvalHint: 'Il preventivo scontato deve essere approvato.', selectProduct: 'Seleziona prima un prodotto', selectProductHint: 'Il preventivo viene generato dopo la selezione.', approved: 'Preventivo approvato', approve: 'Approva preventivo', activity: 'Attività Agent', activityHint: 'Traccia trasparente del flusso.', operational: 'Sistema operativo', demo: 'Area demo', parsed: 'Richiesta analizzata', searched: 'Ricerca prodotti completata', checked: 'Scorte e prezzi verificati', waiting: 'In attesa di approvazione', next: 'Azione richiesta', live: 'LIVE', unit: 'unità', projectHotel: 'Progetto alberghiero', aluminumChair: 'Alluminio · Sedia da esterno', english: 'Italiano', quoteReview: 'Revisione preventivi', customer: 'Cliente', sku: 'SKU', status: 'Stato', action: 'Azione', refresh: 'Aggiorna', noQuotes: 'Nessun preventivo', reviewHint: 'Rivedi i preventivi generati.' },
 } as const
 const t = (key: keyof typeof translations.en) => translations[locale.value][key]
-const navItems = computed(() => navKeys.filter((key) => key !== 'users' || (authEnabled.value && authRole.value === 'admin')).map((key) => ({ key, label: key === 'customers' ? (locale.value === 'zh' ? '客户' : locale.value === 'it' ? 'Clienti' : 'Customers') : key === 'users' ? (locale.value === 'zh' ? '用户管理' : locale.value === 'it' ? 'Utenti' : 'Users') : t(key) })))
+const navItems = computed(() => navKeys.filter((key) => (key !== 'users' || (authEnabled.value && authRole.value === 'admin')) && (key !== 'aiSettings' || !authEnabled.value || authRole.value === 'admin')).map((key) => ({ key, label: key === 'customers' ? (locale.value === 'zh' ? '客户' : locale.value === 'it' ? 'Clienti' : 'Customers') : key === 'users' ? (locale.value === 'zh' ? '用户管理' : locale.value === 'it' ? 'Utenti' : 'Users') : t(key) })))
 const customerLabels = computed(() => ({
   title: locale.value === 'zh' ? '客户识别' : locale.value === 'it' ? 'Identificazione cliente' : 'Customer match',
   hint: locale.value === 'zh' ? '从询盘内容中识别。' : locale.value === 'it' ? 'Identificato dal contesto della richiesta.' : 'Identified from the inquiry context.',
@@ -124,6 +153,11 @@ const formattedTotal = computed(() => `$${quote.value.total.toLocaleString('en-U
 const isBusy = computed(() => loading.value || quotesLoading.value)
 const productMatches = computed(() => new Map((workflowResult.value?.product_matches ?? []).map((match) => [match.sku, match])))
 const productBySku = computed(() => new Map(products.value.map((product) => [product.sku, product])))
+const filteredRagHistory = computed(() => ragEvaluationHistory.value.filter((run) => ragHistoryFilter.value === 'all' || run.mode === ragHistoryFilter.value))
+const ragTrendRuns = computed(() => [...filteredRagHistory.value].filter((run) => run.created_at).slice(0, 12).reverse())
+const trendX = (index: number) => ragTrendRuns.value.length <= 1 ? 300 : 24 + (index * 552) / (ragTrendRuns.value.length - 1)
+const trendY = (value: number) => 156 - Math.max(0, Math.min(1, value)) * 132
+const trendPoints = (metric: 'top1_recall' | 'top3_recall' | 'mrr') => ragTrendRuns.value.map((run, index) => `${trendX(index)},${trendY(run[metric])}`).join(' ')
 function selectCandidate(sku: string) {
   selectedCandidateSku.value = selectedCandidateSku.value === sku ? '' : sku
 }
@@ -150,6 +184,88 @@ function updateAiStatus(provider: string) {
 async function switchAIProvider(provider: AIProviderId) {
   aiProviderLoading.value = true
   try { aiProvider.value = (await setAIProvider(provider)).active } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to switch AI provider' } finally { aiProviderLoading.value = false }
+}
+
+function selectAIConfigProvider(provider: AIProviderId) {
+  aiConfigProvider.value = provider
+  const config = aiSettings.value?.providers.find((item) => item.id === provider)
+  aiConfigForm.value = {
+    base_url: config?.base_url ?? '',
+    model: config?.model ?? '',
+    timeout_seconds: config?.timeout_seconds ?? 30,
+    api_key: '',
+  }
+  aiTestStatus.value = ''
+}
+
+async function loadAISettings() {
+  try {
+    const [result, diagnostics] = await Promise.all([fetchAISettings(), fetchAIDiagnostics()])
+    aiSettings.value = result
+    aiDiagnostics.value = diagnostics
+    aiProvider.value = result.active
+    aiProviderOptions.value = result.providers.map(({ id, name, model, available }) => ({ id, name, model, available }))
+    if (!result.providers.some((item) => item.id === aiConfigProvider.value)) aiConfigProvider.value = result.active
+    selectAIConfigProvider(aiConfigProvider.value)
+  } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to load AI settings' }
+}
+
+async function loadAIDiagnostics() {
+  aiDiagnosticsLoading.value = true
+  try { aiDiagnostics.value = await fetchAIDiagnostics() } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to load AI diagnostics' } finally { aiDiagnosticsLoading.value = false }
+}
+
+async function saveAISettings() {
+  aiConfigSaving.value = true
+  error.value = ''
+  try {
+    await updateAISettings({ provider: aiConfigProvider.value, base_url: aiConfigForm.value.base_url, model: aiConfigForm.value.model, timeout_seconds: aiConfigForm.value.timeout_seconds, ...(aiConfigForm.value.api_key ? { api_key: aiConfigForm.value.api_key } : {}) })
+    aiConfigForm.value.api_key = ''
+    await loadAISettings()
+  } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to save AI settings' } finally { aiConfigSaving.value = false }
+}
+
+async function testSelectedAIProvider() {
+  aiTestLoading.value = true
+  aiTestStatus.value = locale.value === 'zh' ? '正在测试连接…' : locale.value === 'it' ? 'Test della connessione…' : 'Testing connection…'
+  try {
+    const result = await testAIConnection(aiConfigProvider.value)
+    aiTestStatus.value = result.success
+      ? `${locale.value === 'zh' ? '连接成功' : locale.value === 'it' ? 'Connessione riuscita' : 'Connection succeeded'} · ${result.model || aiProviderLabel(result.provider)} · ${result.latency_ms} ms`
+      : result.message
+  } catch (err) { aiTestStatus.value = err instanceof Error ? err.message : 'Unable to test AI connection' } finally { aiTestLoading.value = false }
+}
+
+async function switchEmbedding(profileId: string) {
+  if (!embeddingSettings.value || profileId === embeddingSettings.value.active.id) return
+  embeddingLoading.value = true
+  embeddingStatus.value = locale.value === 'zh' ? '正在下载模型并重建产品索引，请稍候…' : locale.value === 'it' ? 'Download del modello e ricostruzione dell’indice…' : 'Downloading the model and rebuilding the product index…'
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 120000)
+  try {
+    let result = await switchEmbeddingProfile(profileId, controller.signal)
+    while (result.status === 'queued' || result.status === 'running') {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000))
+      result = await fetchEmbeddingJob(result.job_id, controller.signal)
+      if (result.status === 'running' && result.total_products !== null) {
+        embeddingStatus.value = locale.value === 'zh' ? `正在重建索引：${result.processed_products}/${result.total_products} 个产品（${result.progress_percent}%）` : locale.value === 'it' ? `Indice in ricostruzione: ${result.processed_products}/${result.total_products} prodotti (${result.progress_percent}%)` : `Rebuilding index: ${result.processed_products}/${result.total_products} products (${result.progress_percent}%)`
+      }
+    }
+    if (result.status === 'failed') throw new Error(result.error || 'Embedding profile rebuild failed')
+    embeddingSettings.value.active = result.profile
+    embeddingStatus.value = locale.value === 'zh' ? `切换完成，已索引 ${result.indexed_products ?? 0} 个产品。` : locale.value === 'it' ? `Cambio completato: ${result.indexed_products ?? 0} prodotti indicizzati.` : `Switched successfully; ${result.indexed_products ?? 0} products indexed.`
+    await loadRagEvaluation()
+    embeddingJobs.value = await fetchEmbeddingJobs(embeddingJobPageSize, embeddingJobPage.value * embeddingJobPageSize)
+  } catch (err) {
+    const message = err instanceof DOMException && err.name === 'AbortError' ? (locale.value === 'zh' ? '模型下载或索引重建超时，请检查 Hugging Face 网络后重试。' : locale.value === 'it' ? 'Timeout durante il download o la ricostruzione; controlla la rete Hugging Face.' : 'Model download or index rebuild timed out; check Hugging Face connectivity and retry.') : err instanceof Error ? err.message : 'Unable to switch embedding profile'
+    embeddingStatus.value = message
+    error.value = message
+  } finally { window.clearTimeout(timeout); embeddingLoading.value = false }
+}
+
+function switchEmbeddingFromEvent(event: Event) {
+  const target = event.target as HTMLSelectElement
+  void switchEmbedding(target.value)
 }
 
 async function loadProducts() {
@@ -256,9 +372,11 @@ async function selectNav(key: (typeof navKeys)[number]) {
   }
   if (key === 'agentTrace') {
     try {
-      const [runs, metrics] = await Promise.all([fetchAgentRuns(), fetchEvaluation()])
+      const [runs, metrics, ragMetrics, history] = await Promise.all([fetchAgentRuns(), fetchEvaluation(), runRagEvaluation(ragEvaluationMode.value), fetchRagEvaluationHistory()])
       agentRuns.value = runs
       evaluation.value = metrics
+      ragEvaluation.value = ragMetrics
+      ragEvaluationHistory.value = history
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Unable to load agent runs'
     }
@@ -268,6 +386,34 @@ async function selectNav(key: (typeof navKeys)[number]) {
     try { customers.value = await fetchCustomers(customerSearch.value) } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to load customers' }
   }
   if (key === 'users' && authRole.value === 'admin') await loadUsers()
+  if (key === 'aiSettings') await loadAISettings()
+}
+
+async function runRagPlaygroundQuery() {
+  if (!ragPlaygroundInquiry.value.trim()) return
+  ragPlaygroundLoading.value = true
+  error.value = ''
+  try {
+    ragPlaygroundResult.value = await runRagPlayground({
+      inquiry: ragPlaygroundInquiry.value,
+      mode: ragPlaygroundMode.value,
+      top_k: ragPlaygroundTopK.value,
+      score_threshold: ragPlaygroundThreshold.value,
+    })
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Unable to run RAG playground'
+  } finally {
+    ragPlaygroundLoading.value = false
+  }
+}
+
+async function loadRagEvaluation() {
+  ragEvaluationLoading.value = true
+  try {
+    const [metrics, history] = await Promise.all([runRagEvaluation(ragEvaluationMode.value), fetchRagEvaluationHistory()])
+    ragEvaluation.value = metrics
+    ragEvaluationHistory.value = history
+  } catch (err) { error.value = err instanceof Error ? err.message : 'Unable to load RAG evaluation metrics' } finally { ragEvaluationLoading.value = false }
 }
 
 async function loadUsers() {
@@ -305,6 +451,34 @@ async function changeUserRole(user: UserRecord, role: UserRecord['role']) {
     const updated = await updateUser(user.id, { role })
     users.value = users.value.map((item) => item.id === updated.id ? updated : item)
   } catch (err) { userError.value = err instanceof Error ? err.message : 'Unable to update user' }
+}
+
+function openPasswordForm(user: UserRecord) {
+  passwordEditingUserId.value = user.id
+  passwordForm.value = { password: '', confirm: '' }
+  userError.value = ''
+}
+
+function closePasswordForm() {
+  passwordEditingUserId.value = null
+  passwordForm.value = { password: '', confirm: '' }
+}
+
+async function saveUserPassword(user: UserRecord) {
+  userError.value = ''
+  if (passwordForm.value.password.length < 8) {
+    userError.value = locale.value === 'zh' ? '密码至少需要 8 位。' : locale.value === 'it' ? 'La password deve contenere almeno 8 caratteri.' : 'Password must be at least 8 characters.'
+    return
+  }
+  if (passwordForm.value.password !== passwordForm.value.confirm) {
+    userError.value = locale.value === 'zh' ? '两次输入的密码不一致。' : locale.value === 'it' ? 'Le password non coincidono.' : 'Passwords do not match.'
+    return
+  }
+  passwordSaving.value = true
+  try {
+    await updateUser(user.id, { password: passwordForm.value.password })
+    closePasswordForm()
+  } catch (err) { userError.value = err instanceof Error ? err.message : 'Unable to update password' } finally { passwordSaving.value = false }
 }
 
 async function selectQuote(record: QuoteRecord) {
@@ -402,7 +576,7 @@ async function selectProductForQuote(sku: string) {
   loading.value = true
   error.value = ''
   try {
-    workflowResult.value = await runInquiryWorkflow(inquiry.value, customerName.value, sku)
+    workflowResult.value = await runInquiryWorkflow(inquiry.value, customerName.value, sku, workflowResult.value?.inquiry)
     quote.value = { id: workflowResult.value.quote.id ?? undefined, sku: workflowResult.value.quote.sku, quantity: workflowResult.value.quote.quantity, unitPrice: workflowResult.value.quote.unit_price_usd, total: workflowResult.value.quote.total_price_usd, status: workflowResult.value.quote.status }
     updateAiStatus(workflowResult.value.inquiry.ai_provider)
     await nextTick()
@@ -480,21 +654,45 @@ async function signOut() {
   authRole.value = ''
 }
 
+async function initializeApp() {
+  try {
+    const status = await fetchAuthStatus()
+    authEnabled.value = status.enabled
+  } catch {
+    authEnabled.value = false
+  } finally {
+    authReady.value = true
+  }
+  if (authEnabled.value && !authToken.value) return
+  void fetchAISettings().then((status) => { aiSettings.value = status; aiProvider.value = status.active; aiProviderOptions.value = status.providers.map(({ id, name, model, available }) => ({ id, name, model, available })); selectAIConfigProvider(status.active) }).catch(() => fetchAIProviders().then((status) => { aiProvider.value = status.active; aiProviderOptions.value = status.providers }).catch(() => undefined))
+  void Promise.all([fetchEmbeddingSettings(), fetchEmbeddingJobs(embeddingJobPageSize, 0)]).then(([status, jobs]) => { embeddingSettings.value = status; embeddingJobs.value = jobs }).catch(() => undefined)
+  if (authEnabled.value && authRole.value === 'admin' && activeNav.value === 'users') void loadUsers()
+  if (activeNav.value === 'inquiryWorkspace') void loadProducts()
+  else void selectNav(activeNav.value)
+}
+
 onMounted(() => {
+  window.addEventListener('tradepilot-auth-invalid', () => {
+    authToken.value = ''
+    authRole.value = ''
+  })
   window.addEventListener('popstate', () => {
     const key = window.location.hash.slice(1) as (typeof navKeys)[number]
     if (navKeys.includes(key)) void selectNav(key)
   })
-  void fetchAIProviders().then((status) => { aiProvider.value = status.active; aiProviderOptions.value = status.providers }).catch(() => undefined)
-  void fetchAuthStatus().then((status) => { authEnabled.value = status.enabled; if (status.enabled && authRole.value === 'admin' && activeNav.value === 'users') void loadUsers() }).catch(() => undefined)
-  if (activeNav.value === 'inquiryWorkspace') void loadProducts()
-  else void selectNav(activeNav.value)
+  void initializeApp()
 })
+
+async function loadEmbeddingJobPage(page: number) {
+  const nextPage = Math.max(0, page)
+  embeddingJobs.value = await fetchEmbeddingJobs(embeddingJobPageSize, nextPage * embeddingJobPageSize)
+  embeddingJobPage.value = nextPage
+}
 </script>
 
 <template>
   <div class="app-shell">
-    <div v-if="authEnabled && !authToken" class="auth-gate">
+    <div v-if="authReady && authEnabled && !authToken" class="auth-gate">
       <form class="auth-card" @submit.prevent="signIn">
         <span class="brand-mark">TP</span><h1>TradePilot AI</h1><p>Sign in to approve quotations.</p>
         <input v-model="loginForm.username" autocomplete="username" placeholder="Username" required />
@@ -519,7 +717,7 @@ onMounted(() => {
       <div v-if="error" class="global-error"><span>{{ error }}</span><button aria-label="Dismiss error" @click="clearError">×</button></div>
       <header class="topbar"><div><p class="eyebrow">{{ t('salesOps') }} / {{ navItems.find((item) => item.key === activeNav)?.label.toUpperCase() }}</p><h1>{{ t('inquiryTitle') }}</h1></div><div class="user-chip"><select v-model="aiProvider" class="language-select" aria-label="AI model" :disabled="aiProviderLoading" @change="switchAIProvider(aiProvider)"><option v-for="provider in aiProviderOptions" :key="provider.id" :value="provider.id" :disabled="!provider.available">{{ aiProviderLabel(provider.id) }}{{ !provider.available && ['openai_compatible', 'deepseek', 'kimi'].includes(provider.id) ? (locale === 'zh' ? '（未配置）' : locale === 'it' ? ' (non configurato)' : ' (not configured)') : '' }}{{ provider.model ? ` · ${provider.model}` : '' }}</option></select><select v-model="locale" class="language-select" aria-label="Language"><option value="zh">中文</option><option value="en">English</option><option value="it">Italiano</option></select><span class="avatar">JD</span><span>Jordan Davis</span><button v-if="authEnabled && authToken" class="logout-button" @click="signOut">Sign out</button><span class="chevron">⌄</span></div></header>
 
-      <section v-if="!['quotes', 'products', 'agentTrace', 'customers', 'users'].includes(activeNav)" class="workspace-grid">
+      <section v-if="!['quotes', 'products', 'agentTrace', 'ragPlayground', 'customers', 'aiSettings', 'users'].includes(activeNav)" class="workspace-grid">
         <div class="left-column">
           <section class="panel inquiry-panel">
             <div class="panel-header"><div><span class="step">01</span><div><h2>{{ t('inquiry') }}</h2><p>{{ t('inquiryHint') }}</p></div></div><span class="badge neutral">{{ t('new') }}</span></div>
@@ -544,7 +742,7 @@ onMounted(() => {
             <div class="search-row"><input v-model="search" placeholder="Search products or SKU" @keyup.enter="loadProducts" /><button class="secondary-button" @click="loadProducts">{{ t('search') }}</button></div>
             <p v-if="loading" class="muted">{{ t('loading') }}</p><p v-else-if="error" class="error-message">{{ error }}</p>
             <div v-else class="product-list"><article v-for="product in products.slice(0, 3)" :key="product.sku" class="product-card" :class="{ selected: selectedCandidateSku === product.sku }" @click="selectCandidate(product.sku)"><div class="product-icon">◒</div><div class="product-info"><strong>{{ product.name }}</strong><span>{{ product.sku }} · {{ product.material }}</span><div v-if="productMatches.get(product.sku)" class="match-explanation"><b>{{ productMatches.get(product.sku)?.score }}% match</b><span>{{ productMatches.get(product.sku)?.reasons.join(' · ') }}</span><em v-if="productMatches.get(product.sku)?.unmet_conditions.length">⚠ {{ productMatches.get(product.sku)?.unmet_conditions.join(' · ') }}</em></div></div><div class="product-price">${{ product.unit_price_usd.toFixed(2) }}<small>/ unit</small></div><div v-if="selectedCandidateSku === product.sku" class="candidate-detail inline" @click.stop><div><span class="step">DETAIL</span><h3>{{ product.name }}</h3><p>{{ product.description }}</p><span class="candidate-tags">{{ product.match_tags || '—' }}</span></div><div class="detail-grid"><span><small>SKU</small><strong>{{ product.sku }}</strong></span><span><small>MATERIAL</small><strong>{{ product.material || '—' }}</strong></span><span><small>COLORS</small><strong>{{ product.colors || '—' }}</strong></span><span><small>MOQ</small><strong>{{ product.min_order_quantity }} {{ t('unit') }}</strong></span><span><small>INVENTORY</small><strong>{{ productMatches.get(product.sku)?.inventory_available ?? '—' }}</strong></span><span><small>LEAD TIME</small><strong>{{ product.lead_time_days }} days</strong></span></div></div></article></div>
-            <div v-if="workflowResult?.product_matches.length" class="candidate-list"><h3>{{ candidateLabels.title }}</h3><article v-for="match in workflowResult.product_matches" :key="match.sku" class="candidate-card" :class="{ selected: selectedCandidateSku === match.sku }" @click="selectCandidate(match.sku)"><div><strong>{{ match.name }}</strong><span>{{ match.sku }} · {{ match.inventory_sufficient ? `${match.inventory_available} ${candidateLabels.available}` : candidateLabels.insufficient }}</span><small>${{ match.unit_price_usd.toFixed(2) }} · {{ match.lead_time_days }} days</small></div><b>{{ match.score }}%</b><small>{{ match.reasons.join(' · ') || candidateLabels.partial }}<em v-if="match.unmet_conditions.length"> · ⚠ {{ match.unmet_conditions.join(' · ') }}</em></small><button class="table-action" :disabled="loading || !match.inventory_sufficient" @click.stop="selectProductForQuote(match.sku)">{{ match.inventory_sufficient ? candidateLabels.use : candidateLabels.unavailable }}</button><div v-if="selectedCandidateSku === match.sku && productBySku.get(match.sku)" class="candidate-detail inline" @click.stop><div><span class="step">DETAIL</span><h3>{{ productBySku.get(match.sku)?.name }}</h3><p>{{ productBySku.get(match.sku)?.description }}</p><span class="candidate-tags">{{ productBySku.get(match.sku)?.match_tags || '—' }}</span></div><div class="detail-grid"><span><small>SKU</small><strong>{{ productBySku.get(match.sku)?.sku }}</strong></span><span><small>MATERIAL</small><strong>{{ productBySku.get(match.sku)?.material || '—' }}</strong></span><span><small>COLORS</small><strong>{{ productBySku.get(match.sku)?.colors || '—' }}</strong></span><span><small>MOQ</small><strong>{{ productBySku.get(match.sku)?.min_order_quantity }} {{ t('unit') }}</strong></span><span><small>INVENTORY</small><strong>{{ match.inventory_available }}</strong></span><span><small>LEAD TIME</small><strong>{{ productBySku.get(match.sku)?.lead_time_days }} days</strong></span></div></div></article></div>
+            <div v-if="workflowResult?.product_matches.length" class="candidate-list"><h3>{{ candidateLabels.title }} · {{ workflowResult.retrieval_mode === 'semantic' ? (locale === 'zh' ? '语义检索' : locale === 'it' ? 'Ricerca semantica' : 'Semantic search') : workflowResult.retrieval_mode === 'rules_fallback' ? (locale === 'zh' ? '语义服务不可用，已使用规则匹配' : locale === 'it' ? 'Ricerca semantica non disponibile; regole attive' : 'Semantic search unavailable; rules used') : (locale === 'zh' ? '规则匹配' : locale === 'it' ? 'Regole' : 'Rule matching') }} · {{ workflowResult.explanation_mode === 'grounded_ai' ? (locale === 'zh' ? 'AI 有据解释' : locale === 'it' ? 'Spiegazione AI verificata' : 'Grounded AI explanation') : (locale === 'zh' ? '规则解释' : locale === 'it' ? 'Spiegazione basata su regole' : 'Rule explanation') }}</h3><article v-for="match in workflowResult.product_matches" :key="match.sku" class="candidate-card" :class="{ selected: selectedCandidateSku === match.sku }" @click="selectCandidate(match.sku)"><div><strong>{{ match.name }}</strong><span>{{ match.sku }} · {{ match.inventory_sufficient ? `${match.inventory_available} ${candidateLabels.available}` : candidateLabels.insufficient }}</span><small>${{ match.unit_price_usd.toFixed(2) }} · {{ match.lead_time_days }} days</small></div><b>{{ match.score }}%</b><small>{{ match.reasons.join(' · ') || candidateLabels.partial }}<em v-if="match.unmet_conditions.length"> · ⚠ {{ match.unmet_conditions.join(' · ') }}</em></small><button class="table-action" :disabled="loading || !match.inventory_sufficient" @click.stop="selectProductForQuote(match.sku)">{{ match.inventory_sufficient ? candidateLabels.use : candidateLabels.unavailable }}</button><p class="rag-explanation"><strong>{{ workflowResult.explanation_mode === 'grounded_ai' ? 'AI' : 'RULE' }}</strong> {{ match.explanation }}<span v-for="item in match.evidence" :key="item.field" class="evidence-chip">{{ item.field }}: {{ item.value }}</span></p><div v-if="selectedCandidateSku === match.sku && productBySku.get(match.sku)" class="candidate-detail inline" @click.stop><div><span class="step">DETAIL</span><h3>{{ productBySku.get(match.sku)?.name }}</h3><p>{{ productBySku.get(match.sku)?.description }}</p><span class="candidate-tags">{{ productBySku.get(match.sku)?.match_tags || '—' }}</span></div><div class="detail-grid"><span><small>SKU</small><strong>{{ productBySku.get(match.sku)?.sku }}</strong></span><span><small>MATERIAL</small><strong>{{ productBySku.get(match.sku)?.material || '—' }}</strong></span><span><small>COLORS</small><strong>{{ productBySku.get(match.sku)?.colors || '—' }}</strong></span><span><small>MOQ</small><strong>{{ productBySku.get(match.sku)?.min_order_quantity }} {{ t('unit') }}</strong></span><span><small>INVENTORY</small><strong>{{ match.inventory_available }}</strong></span><span><small>LEAD TIME</small><strong>{{ productBySku.get(match.sku)?.lead_time_days }} days</strong></span></div></div></article></div>
           </section>
         </div>
 
@@ -561,8 +759,43 @@ onMounted(() => {
       <section v-else-if="activeNav === 'agentTrace'" class="panel quotes-page">
         <div class="panel-header"><div><h2>{{ t('activity') }}</h2><p>{{ t('activityHint') }}</p></div><button class="secondary-button" @click="selectNav('agentTrace')">{{ t('refresh') }}</button></div>
         <div v-if="evaluation" class="metrics-grid"><div><small>CASES</small><strong>{{ evaluation.cases }}</strong></div><div><small>REQUIREMENTS</small><strong>{{ (evaluation.requirement_accuracy * 100).toFixed(0) }}%</strong></div><div><small>PRODUCT MATCH</small><strong>{{ (evaluation.product_match_rate * 100).toFixed(0) }}%</strong></div><div><small>FAILURE DETECTION</small><strong>{{ (evaluation.failure_detection_rate * 100).toFixed(0) }}%</strong></div></div>
+        <section class="rag-evaluation-panel">
+          <div class="panel-header"><div><h3>RAG 检索评测</h3><p>比较规则检索与语义检索的候选排序效果。</p><small v-if="embeddingStatus" :class="['embedding-status', embeddingLoading ? 'muted' : embeddingStatus.includes('超时') || embeddingStatus.includes('失败') ? 'error-message' : 'success-status']">{{ embeddingStatus }}</small></div><div class="detail-actions"><select v-if="embeddingSettings?.profiles.length" :value="embeddingSettings.active.id" class="language-select" :disabled="embeddingLoading" @change="switchEmbeddingFromEvent"><option v-for="profile in embeddingSettings.profiles" :key="profile.id" :value="profile.id">{{ profile.provider }} · {{ profile.model }}</option></select><select v-model="ragEvaluationMode" class="language-select" @change="loadRagEvaluation"><option value="semantic">语义检索</option><option value="rules">规则检索</option></select><button class="secondary-button" :disabled="ragEvaluationLoading || embeddingLoading" @click="loadRagEvaluation">{{ ragEvaluationLoading || embeddingLoading ? '…' : t('refresh') }}</button></div></div>
+          <p v-if="ragEvaluationLoading" class="muted">正在加载 RAG 评测…</p>
+          <template v-else-if="ragEvaluation">
+            <div class="metrics-grid rag-metrics"><div><small>TOP-1 RECALL</small><strong>{{ (ragEvaluation.top1_recall * 100).toFixed(1) }}%</strong></div><div><small>TOP-3 RECALL</small><strong>{{ (ragEvaluation.top3_recall * 100).toFixed(1) }}%</strong></div><div><small>MRR</small><strong>{{ ragEvaluation.mrr.toFixed(3) }}</strong></div><div><small>CASES</small><strong>{{ ragEvaluation.evaluated_cases }}/{{ ragEvaluation.cases }}</strong></div></div>
+            <div v-if="ragEvaluation.misses.length" class="rag-misses"><small>TOP-3 漏召回样本</small><div v-for="item in ragEvaluation.misses" :key="item.text" class="rag-miss"><span>{{ item.text }}</span><strong>{{ item.expected_sku }}</strong><em>返回：{{ item.returned_skus.join('、') }}</em></div></div>
+            <p v-else class="rag-success">✓ 当前模式没有 Top-3 漏召回样本。</p>
+            <div v-if="ragEvaluationHistory.length" class="rag-history"><div class="rag-history-title"><small>最近评测记录</small><select v-model="ragHistoryFilter" class="language-select"><option value="all">全部模式</option><option value="semantic">语义检索</option><option value="rules">规则检索</option></select></div><div v-for="run in filteredRagHistory.slice(0, 8)" :key="run.id" class="rag-history-row"><span>{{ run.created_at ? new Date(run.created_at).toLocaleString(locale === 'zh' ? 'zh-CN' : locale === 'it' ? 'it-IT' : 'en-US') : '—' }}</span><strong>{{ run.mode === 'semantic' ? '语义' : '规则' }}</strong><span>{{ run.embedding_model || 'rules' }}</span><span>Top-1 {{ (run.top1_recall * 100).toFixed(1) }}%</span><span>MRR {{ run.mrr.toFixed(3) }}</span></div></div>
+            <div v-if="embeddingJobs.items.length" class="embedding-job-history"><div class="rag-history-title"><small>Embedding 重建历史（{{ embeddingJobs.total }}）</small><div class="detail-actions"><button class="table-action" :disabled="embeddingJobPage === 0" @click="loadEmbeddingJobPage(embeddingJobPage - 1)">上一页</button><button class="table-action" :disabled="(embeddingJobPage + 1) * embeddingJobs.limit >= embeddingJobs.total" @click="loadEmbeddingJobPage(embeddingJobPage + 1)">下一页</button></div></div><div v-for="job in embeddingJobs.items" :key="job.job_id" class="embedding-job-row"><span>{{ new Date(job.created_at).toLocaleString(locale === 'zh' ? 'zh-CN' : locale === 'it' ? 'it-IT' : 'en-US') }}</span><span>{{ job.profile.model }}</span><strong :class="job.status === 'succeeded' ? 'success-status' : job.status === 'failed' ? 'error-message' : 'muted'">{{ job.status === 'succeeded' ? '完成' : job.status === 'failed' ? '失败' : job.status === 'running' ? `${job.progress_percent}%` : '排队中' }}</strong><span v-if="job.status === 'failed'">{{ job.error }}</span><span v-else>{{ job.indexed_products ?? job.processed_products ?? 0 }}/{{ job.total_products ?? '—' }} products</span></div></div>
+            <div v-if="ragTrendRuns.length" class="rag-trend"><div class="rag-trend-header"><small>评测趋势</small><span><i class="trend-key top1" />Top-1 <i class="trend-key top3" />Top-3 <i class="trend-key mrr" />MRR</span></div><svg viewBox="0 0 600 180" role="img" aria-label="RAG evaluation trend"><line x1="24" y1="24" x2="576" y2="24" /><line x1="24" y1="90" x2="576" y2="90" /><line x1="24" y1="156" x2="576" y2="156" /><polyline class="trend-line top1" :points="trendPoints('top1_recall')" /><polyline class="trend-line top3" :points="trendPoints('top3_recall')" /><polyline class="trend-line mrr" :points="trendPoints('mrr')" /><template v-for="(run, index) in ragTrendRuns" :key="`trend-${run.id}`"><circle class="trend-dot top1" :cx="trendX(index)" :cy="trendY(run.top1_recall)" r="3" /><circle class="trend-dot top3" :cx="trendX(index)" :cy="trendY(run.top3_recall)" r="3" /><circle class="trend-dot mrr" :cx="trendX(index)" :cy="trendY(run.mrr)" r="3" /></template></svg><div class="rag-trend-axis"><span>0%</span><span>50%</span><span>100%</span></div></div>
+          </template>
+        </section>
         <p v-if="!agentRuns.length" class="muted">{{ t('noQuotes') }}</p>
         <div v-for="run in agentRuns" :key="run.run_id" class="run-card"><div class="run-header"><strong>Run {{ run.run_id }}</strong><small class="muted">{{ run.created_at ? new Date(run.created_at).toLocaleString(locale === 'zh' ? 'zh-CN' : locale === 'it' ? 'it-IT' : 'en-US') : '—' }}</small><span class="muted">{{ run.inquiry_text }}</span></div><div class="run-steps"><div v-for="step in run.steps" :key="step.name" class="trace-item" :class="step.status === 'complete' ? 'done' : 'current'"><span>{{ step.status === 'complete' ? '✓' : '!' }}</span><div><strong>{{ step.name }}</strong><small>{{ step.status === 'complete' ? t('complete') : t('waiting') }}</small></div></div></div></div>
+      </section>
+      <section v-else-if="activeNav === 'ragPlayground'" class="panel quotes-page rag-playground-page">
+        <div class="panel-header"><div><h2>{{ t('ragPlayground') }}</h2><p>{{ locale === 'zh' ? '用任意询盘单独测试检索效果，不会生成报价或修改库存。' : locale === 'it' ? 'Testa il recupero con qualsiasi richiesta senza creare preventivi o modificare le scorte.' : 'Test retrieval with any inquiry without creating quotes or changing inventory.' }}</p></div></div>
+        <div class="rag-playground-form">
+          <label class="form-field rag-playground-inquiry"><span>{{ locale === 'zh' ? '测试询盘' : locale === 'it' ? 'Richiesta di test' : 'Test inquiry' }}</span><textarea v-model="ragPlaygroundInquiry" rows="4" /></label>
+          <label class="form-field"><span>{{ locale === 'zh' ? '检索模式' : locale === 'it' ? 'Modalità' : 'Mode' }}</span><select v-model="ragPlaygroundMode"><option value="semantic">{{ locale === 'zh' ? '语义检索' : locale === 'it' ? 'Semantico' : 'Semantic' }}</option><option value="rules">{{ locale === 'zh' ? '规则检索' : locale === 'it' ? 'Regole' : 'Rules' }}</option></select></label>
+          <label class="form-field"><span>Top-K</span><input v-model.number="ragPlaygroundTopK" type="number" min="1" max="20" /></label>
+          <label class="form-field"><span>{{ locale === 'zh' ? '相似度阈值' : locale === 'it' ? 'Soglia similarità' : 'Score threshold' }}</span><input v-model.number="ragPlaygroundThreshold" type="number" min="0" max="1" step="0.05" /></label>
+          <button class="primary-button compact rag-playground-run" :disabled="ragPlaygroundLoading" @click="runRagPlaygroundQuery">{{ ragPlaygroundLoading ? '…' : (locale === 'zh' ? '开始检索' : locale === 'it' ? 'Esegui ricerca' : 'Run retrieval') }} <span>→</span></button>
+        </div>
+        <p class="muted rag-playground-note">{{ locale === 'zh' ? '解析使用确定性的规则抽取，语义模式使用当前 Embedding + Qdrant，结果只读。' : locale === 'it' ? 'L’estrazione usa regole deterministiche; la modalità semantica usa l’Embedding e Qdrant attivi.' : 'Parsing uses deterministic rules; semantic mode uses the active embedding profile and Qdrant. Results are read-only.' }}</p>
+        <template v-if="ragPlaygroundResult">
+          <div class="rag-playground-summary">
+            <div><small>{{ locale === 'zh' ? '解析需求' : 'PARSED REQUIREMENTS' }}</small><strong>{{ ragPlaygroundResult.parsed.quantity ?? '—' }} {{ ragPlaygroundResult.parsed.product_keywords.join(' · ') || '—' }}</strong><span>{{ ragPlaygroundResult.parsed.destination_country || '—' }} · {{ ragPlaygroundResult.parsed.project_type || '—' }}</span></div>
+            <div><small>{{ locale === 'zh' ? '检索状态' : 'RETRIEVAL' }}</small><strong>{{ ragPlaygroundResult.retrieval_mode }}</strong><span>{{ ragPlaygroundResult.candidates.length }} candidates</span></div>
+            <div><small>{{ locale === 'zh' ? '耗时' : 'TIMINGS' }}</small><strong>{{ ragPlaygroundResult.timings.total_ms.toFixed(0) }} ms</strong><span>parse {{ ragPlaygroundResult.timings.parse_ms.toFixed(0) }} · retrieve {{ ragPlaygroundResult.timings.retrieval_ms.toFixed(0) }} · rank {{ ragPlaygroundResult.timings.ranking_ms.toFixed(0) }}<template v-if="ragPlaygroundResult.reranker.enabled"> · rerank {{ (ragPlaygroundResult.timings.reranker_ms ?? 0).toFixed(0) }}</template></span></div>
+          </div>
+          <div :class="['rag-match-status', `rag-match-${ragPlaygroundResult.match_status}`]"><strong>{{ ragPlaygroundResult.match_status === 'reliable' ? (locale === 'zh' ? '高可信匹配' : 'Reliable match') : ragPlaygroundResult.match_status === 'review' ? (locale === 'zh' ? '建议人工确认' : 'Human review recommended') : (locale === 'zh' ? '未找到可靠匹配' : 'No reliable match') }}</strong><span>{{ locale === 'zh' ? `最高匹配分 ${ragPlaygroundResult.candidates[0]?.score ?? 0}%，低于 ${ragPlaygroundResult.match_threshold}% 时不会视为可靠匹配。` : `Best score ${ragPlaygroundResult.candidates[0]?.score ?? 0}%; scores below ${ragPlaygroundResult.match_threshold}% are not reliable.` }}</span></div>
+          <p class="rag-reranker-status">{{ ragPlaygroundResult.reranker.enabled ? `Cross-Encoder: ${ragPlaygroundResult.reranker.model} · ${ragPlaygroundResult.reranker.scores_returned} candidates reranked` : (locale === 'zh' ? 'Cross-Encoder 未启用：当前使用规则 + 语义混合排序。' : 'Cross-Encoder disabled: using hybrid rule and semantic ranking.') }}<span v-if="ragPlaygroundResult.reranker.error"> · {{ ragPlaygroundResult.reranker.error }}</span></p>
+          <p v-if="ragPlaygroundResult.retrieval_error" class="error-message">{{ ragPlaygroundResult.retrieval_error }}</p>
+          <div class="rag-playground-results"><div class="rag-playground-results-header"><strong>{{ locale === 'zh' ? '候选产品' : locale === 'it' ? 'Candidati' : 'Candidates' }}</strong><span>Top {{ ragPlaygroundTopK }} · threshold {{ ragPlaygroundThreshold.toFixed(2) }}</span></div><p v-if="!ragPlaygroundResult.candidates.length" class="muted">{{ locale === 'zh' ? '没有符合条件的产品。' : 'No matching products.' }}</p><article v-for="candidate in ragPlaygroundResult.candidates" :key="candidate.sku" class="rag-playground-card"><div class="rag-playground-card-head"><div><strong>{{ candidate.name }}</strong><span>{{ candidate.sku }} · ${{ candidate.unit_price_usd.toFixed(2) }} · {{ candidate.inventory_available }} available</span></div><div class="rag-score"><b>{{ candidate.score }}%</b><small>final score</small></div></div><div class="rag-score-row"><span>Semantic score <b>{{ candidate.semantic_score == null ? '—' : candidate.semantic_score.toFixed(3) }}</b></span><span>Inventory <b>{{ candidate.inventory_sufficient ? 'sufficient' : 'insufficient' }}</b></span><span>Lead time <b>{{ candidate.lead_time_days }} days</b></span></div><p v-if="candidate.reasons.length" class="rag-reasons">{{ candidate.reasons.join(' · ') }}</p><p v-if="candidate.unmet_conditions.length" class="rag-unmet">⚠ {{ candidate.unmet_conditions.join(' · ') }}</p></article></div>
+        </template>
+        <div v-else class="rag-playground-empty">{{ locale === 'zh' ? '输入询盘后点击“开始检索”查看 RAG 候选和评分。' : locale === 'it' ? 'Inserisci una richiesta e avvia la ricerca per vedere candidati e punteggi.' : 'Enter an inquiry and run retrieval to inspect candidates and scores.' }}</div>
       </section>
       <section v-else-if="activeNav === 'products'" class="panel quotes-page" @click.self="selectedProduct = null">
         <div class="panel-header"><div><h2>{{ t('products') }}</h2><p>{{ productLabels.browse }}</p></div><div class="detail-actions"><button class="secondary-button" @click="loadProducts">{{ t('refresh') }}</button><button v-if="canManageCatalog" class="primary-button compact" @click="productCreateOpen = true">＋ {{ productLabels.newProduct }}</button></div></div>
@@ -577,11 +810,19 @@ onMounted(() => {
         <div class="customer-list"><div v-for="customer in customers" :key="customer.id" class="customer-entry"><article class="customer-row" :class="{ selected: selectedCustomer?.id === customer.id }" @click="selectCustomer(customer)"><div class="customer-avatar">{{ customer.company_name.slice(0, 2).toUpperCase() }}</div><div class="customer-row-main"><strong>{{ customer.company_name }}</strong><span>{{ customer.contact_name }} · {{ customer.email }}</span></div><span class="customer-country">{{ customer.country }}</span></article><div v-if="selectedCustomer?.id === customer.id" class="product-detail customer-detail inline" @click.stop><div><span class="step">DETAIL</span><h3>{{ selectedCustomer.company_name }}</h3><p>{{ selectedCustomer.contact_name }} · {{ selectedCustomer.email }} · {{ selectedCustomer.country }}</p><h4>Quote history ({{ customerQuotes.length }})</h4><div v-if="customerQuotes.length" class="quote-history"><div v-for="record in customerQuotes" :key="record.id"><span>{{ record.sku }} · {{ record.quantity }} units</span><strong>${{ record.total_price_usd.toFixed(2) }}</strong></div></div><p v-else class="muted">No quotes for this customer yet.</p></div><div class="detail-actions"><button class="secondary-button" @click="customerName = selectedCustomer?.company_name || ''; selectNav('inquiryWorkspace')">Use in inquiry</button><button class="secondary-button" :disabled="customerDeleting || customerSaving" @click="openCustomerForm(selectedCustomer)">Edit</button><button class="danger-button" :disabled="customerDeleting || customerSaving" @click="removeCustomer(selectedCustomer)">{{ customerDeleting ? '…' : 'Delete' }}</button></div></div></div></div>
         <div v-if="customerFormOpen" class="customer-form"><h3>{{ editingCustomerId ? customerLabels.editTitle : customerLabels.createCustomerLabel }}</h3><div class="form-grid"><input v-model="customerForm.company_name" :placeholder="customerLabels.company" /><input v-model="customerForm.contact_name" :placeholder="customerLabels.contact" /><input v-model="customerForm.country" :placeholder="customerLabels.country" /><input v-model="customerForm.email" type="email" :placeholder="customerLabels.email" /></div><div class="detail-actions"><button class="secondary-button" :disabled="customerSaving" @click="customerFormOpen = false">{{ productLabels.cancel }}</button><button class="primary-button compact" :disabled="customerSaving" @click="saveCustomer">{{ customerSaving ? '…' : productLabels.save }}</button></div></div>
       </section>
+      <section v-else-if="activeNav === 'aiSettings'" class="panel quotes-page">
+        <div class="panel-header"><div><h2>{{ t('aiSettings') }}</h2><p>{{ locale === 'zh' ? '配置模型服务商、模型和连接地址。' : locale === 'it' ? 'Configura provider, modello e indirizzo di connessione.' : 'Configure providers, models, and connection endpoints.' }}</p></div><div class="detail-actions"><button class="secondary-button" :disabled="aiDiagnosticsLoading" @click="loadAIDiagnostics">{{ aiDiagnosticsLoading ? '…' : (locale === 'zh' ? '诊断' : locale === 'it' ? 'Diagnostica' : 'Diagnostics') }}</button><button class="secondary-button" @click="loadAISettings">{{ t('refresh') }}</button></div></div>
+        <div v-if="aiDiagnostics" class="ai-diagnostics"><div class="ai-diagnostics-header"><strong>{{ locale === 'zh' ? '启动配置诊断' : locale === 'it' ? 'Diagnostica configurazione' : 'Startup configuration diagnostics' }}</strong><small>{{ locale === 'zh' ? '不消耗在线模型额度' : locale === 'it' ? 'Non consuma crediti del modello online' : 'Does not consume online model credits' }}</small></div><div class="ai-diagnostics-grid"><div v-for="check in aiDiagnostics.checks" :key="check.id" class="ai-diagnostic-item"><span :class="['diagnostic-dot', `diagnostic-${check.status}`]" /><div><strong>{{ check.name }}</strong><small>{{ check.message }}</small></div><em>{{ check.latency_ms ? `${check.latency_ms} ms` : check.status === 'disabled' ? 'OFF' : '—' }}</em></div></div></div>
+        <div v-if="aiSettings" class="ai-settings-layout">
+          <div class="ai-provider-list"><button v-for="provider in aiSettings.providers" :key="provider.id" class="ai-provider-card" :class="{ selected: aiConfigProvider === provider.id }" @click="selectAIConfigProvider(provider.id)"><span><strong>{{ aiProviderLabel(provider.id) }}</strong><small>{{ provider.model || '—' }}</small></span><em :class="provider.available ? 'success-status' : 'muted'">{{ provider.available ? (locale === 'zh' ? '可用' : locale === 'it' ? 'Disponibile' : 'Available') : (locale === 'zh' ? '未配置' : locale === 'it' ? 'Non configurato' : 'Not configured') }}</em></button></div>
+          <div class="customer-form ai-config-form"><h3>{{ aiProviderLabel(aiConfigProvider) }}</h3><p v-if="aiConfigProvider === 'rules'" class="muted">{{ locale === 'zh' ? '规则引擎无需外部模型配置。' : locale === 'it' ? 'Il motore regole non richiede un modello esterno.' : 'The rule engine does not require an external model.' }}</p><div v-else class="form-grid"><label class="form-field"><span>Base URL</span><input v-model="aiConfigForm.base_url" placeholder="https://api.example.com/v1" /></label><label class="form-field"><span>{{ locale === 'zh' ? '模型' : locale === 'it' ? 'Modello' : 'Model' }}</span><input v-model="aiConfigForm.model" placeholder="model-name" /></label><label class="form-field"><span>{{ locale === 'zh' ? '超时（秒）' : locale === 'it' ? 'Timeout (secondi)' : 'Timeout (seconds)' }}</span><input v-model.number="aiConfigForm.timeout_seconds" type="number" min="1" max="300" /></label><label class="form-field"><span>API Key（{{ aiSettings.providers.find((item) => item.id === aiConfigProvider)?.api_key_configured ? (locale === 'zh' ? '已配置' : locale === 'it' ? 'configurata' : 'configured') : (locale === 'zh' ? '未配置' : locale === 'it' ? 'non configurata' : 'not configured') }}）</span><input v-model="aiConfigForm.api_key" type="password" autocomplete="new-password" :placeholder="locale === 'zh' ? '留空则保持不变，不会回显' : locale === 'it' ? 'Vuoto per mantenere la chiave' : 'Leave blank to keep the current key'" /></label></div><p class="muted ai-config-note">{{ locale === 'zh' ? 'API Key 仅在当前后端进程内更新，不会回显，也不会写入数据库；正式部署请写入 .env 或 Docker secrets。' : locale === 'it' ? 'La chiave viene aggiornata solo in memoria, non viene restituita né salvata nel database; per il deploy usa .env o Docker secrets.' : 'The key is updated in the current backend process only, never returned or stored in the database; use .env or Docker secrets for deployment.' }}</p><div class="detail-actions"><button class="secondary-button" :disabled="aiTestLoading" @click="testSelectedAIProvider">{{ aiTestLoading ? '…' : (locale === 'zh' ? '测试连接' : locale === 'it' ? 'Test connessione' : 'Test connection') }}</button><button class="primary-button compact" :disabled="aiConfigSaving" @click="saveAISettings">{{ aiConfigSaving ? '…' : (locale === 'zh' ? '保存配置' : locale === 'it' ? 'Salva configurazione' : 'Save configuration') }}</button></div><p v-if="aiTestStatus" class="ai-test-status" :class="{ error: aiTestStatus.includes('失败') || aiTestStatus.includes('failed') || aiTestStatus.includes('not configured') || aiTestStatus.includes('non configurata') }">{{ aiTestStatus }}</p></div>
+        </div>
+      </section>
       <section v-else-if="activeNav === 'users' && authRole === 'admin'" class="panel quotes-page">
         <div class="panel-header"><div><h2>User management</h2><p>Manage access, roles, and active accounts.</p></div><div class="detail-actions"><button class="secondary-button" @click="loadUsers">Refresh</button><button class="primary-button compact" @click="openUserForm">＋ New user</button></div></div>
         <p v-if="userError" class="error-message">{{ userError }}</p>
         <p v-if="usersLoading" class="muted">Loading users…</p>
-        <div v-else class="users-table-wrap"><table class="quotes-table"><thead><tr><th>USERNAME</th><th>ROLE</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody><tr v-for="user in users" :key="user.id"><td>{{ user.username }}</td><td><select :value="user.role" @change="changeUserRole(user, ($event.target as HTMLSelectElement).value as UserRecord['role'])"><option value="admin">admin</option><option value="approver">approver</option><option value="viewer">viewer</option></select></td><td><span :class="['badge', user.is_active ? 'success' : 'warning']">{{ user.is_active ? 'ACTIVE' : 'INACTIVE' }}</span></td><td><button class="table-action" :disabled="user.username === loginForm.username" @click="toggleUser(user)">{{ user.is_active ? 'Deactivate' : 'Activate' }}</button></td></tr></tbody></table></div>
+        <div v-else class="users-table-wrap"><table class="quotes-table"><thead><tr><th>USERNAME</th><th>ROLE</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody><template v-for="user in users" :key="user.id"><tr><td>{{ user.username }}</td><td><select :value="user.role" @change="changeUserRole(user, ($event.target as HTMLSelectElement).value as UserRecord['role'])"><option value="admin">admin</option><option value="approver">approver</option><option value="viewer">viewer</option></select></td><td><span :class="['badge', user.is_active ? 'success' : 'warning']">{{ user.is_active ? 'ACTIVE' : 'INACTIVE' }}</span></td><td><div class="user-actions"><button class="table-action" @click="openPasswordForm(user)">{{ passwordEditingUserId === user.id ? 'Cancel' : 'Change password' }}</button><button class="table-action" :disabled="user.username === loginForm.username" @click="toggleUser(user)">{{ user.is_active ? 'Deactivate' : 'Activate' }}</button></div></td></tr><tr v-if="passwordEditingUserId === user.id"><td colspan="4"><div class="password-form"><strong>Change password for {{ user.username }}</strong><div class="form-grid"><input v-model="passwordForm.password" type="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" /><input v-model="passwordForm.confirm" type="password" minlength="8" placeholder="Confirm new password" autocomplete="new-password" /></div><div class="detail-actions"><button class="secondary-button" :disabled="passwordSaving" @click="closePasswordForm">Cancel</button><button class="primary-button compact" :disabled="passwordSaving" @click="saveUserPassword(user)">{{ passwordSaving ? '…' : 'Save password' }}</button></div></div></td></tr></template></tbody></table></div>
         <div v-if="userFormOpen" class="customer-form"><h3>New user</h3><div class="form-grid"><input v-model="userForm.username" placeholder="Username" autocomplete="off" /><input v-model="userForm.password" type="password" placeholder="Password (8+ characters)" autocomplete="new-password" /><select v-model="userForm.role"><option value="viewer">viewer</option><option value="approver">approver</option><option value="admin">admin</option></select></div><div class="detail-actions"><button class="secondary-button" :disabled="userSaving" @click="userFormOpen = false">Cancel</button><button class="primary-button compact" :disabled="userSaving" @click="saveUser">{{ userSaving ? '…' : 'Create' }}</button></div></div>
       </section>
     </main>
@@ -601,6 +842,10 @@ onMounted(() => {
 .quotes-table-wrap { overflow-x: auto; }
 .users-table-wrap { overflow-x: auto; }
 .users-table select { padding: 6px 8px; border: 1px solid #dbe7e2; border-radius: 6px; color: #40504f; background: #fff; }
+.password-form { display: grid; gap: 12px; padding: 14px 16px; border: 1px solid #dbe7e2; border-radius: 10px; background: #f7fbf9; }
+.password-form strong { color: #294b43; }
+.user-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 190px; }
+.user-actions .table-action { white-space: nowrap; }
 .quotes-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .quotes-table th { color: #8b9995; font-size: 10px; letter-spacing: .08em; text-align: left; padding: 12px 10px; border-bottom: 1px solid #e6ebe9; }
 .quotes-table td { padding: 15px 10px; border-bottom: 1px solid #edf1ef; color: #40504f; }
@@ -713,6 +958,9 @@ onMounted(() => {
 .candidate-card span, .candidate-card small { color: #8b9995; font-size: 10px; }
 .candidate-card > b { color: #31836f; font-size: 13px; }
 .candidate-card em { color: #b55b50; font-style: normal; }
+.candidate-card .rag-explanation { grid-column: 1 / -1; margin: 5px 0 0; padding: 8px; border-radius: 6px; background: #f2f8f6; color: #536763; font-size: 10px; line-height: 1.45; }
+.rag-explanation > strong { margin-right: 5px; color: #31836f; }
+.rag-explanation .evidence-chip { display: inline-block; margin: 5px 5px 0 0; padding: 2px 5px; border: 1px solid #d5e6e1; border-radius: 4px; background: #fff; color: #526864; }
 .detail-actions { min-width: 120px; }
 .global-error { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; padding: 11px 14px; border: 1px solid #f0c9c4; border-radius: 8px; background: #fff2f0; color: #a34e47; font-size: 12px; }
 .global-error button { border: 0; background: transparent; color: #a34e47; font-size: 18px; cursor: pointer; }
@@ -723,7 +971,79 @@ onMounted(() => {
 .metrics-grid div { padding: 13px; background: #f5f8f7; border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
 .metrics-grid small { color: #8b9995; font-size: 9px; letter-spacing: .08em; }
 .metrics-grid strong { color: #287b6b; font-size: 20px; }
+.rag-evaluation-panel { margin: 18px 0 22px; padding: 14px; border: 1px solid #e4ece9; border-radius: 9px; background: #fbfefd; }
+.rag-evaluation-panel .panel-header { margin-bottom: 12px; }
+.rag-evaluation-panel h3 { margin: 0 0 4px; color: #40504f; font-size: 13px; }
+.rag-evaluation-panel p { margin: 0; color: #8b9995; font-size: 11px; }
+.rag-metrics { grid-template-columns: repeat(4, 1fr); margin: 0; }
+.rag-misses { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.rag-misses > small { color: #b55b50; font-weight: 700; }
+.rag-miss { display: grid; grid-template-columns: 1.5fr auto 1fr; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 6px; background: #fff5f3; color: #667571; font-size: 10px; }
+.rag-miss strong { color: #a34e47; }
+.rag-miss em { color: #8b9995; font-style: normal; }
+.rag-success { margin-top: 12px !important; color: #31836f !important; font-weight: 600; }
+.rag-history { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.rag-history > small { color: #71807c; font-weight: 700; }
+.rag-history-title { display: flex; justify-content: space-between; align-items: center; }
+.rag-history-row { display: grid; grid-template-columns: 1.5fr .6fr .7fr .7fr .7fr; gap: 8px; padding: 7px 9px; border-bottom: 1px solid #edf2f0; color: #71807c; font-size: 10px; }
+.rag-history-row strong { color: #31836f; }
+.embedding-job-history { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf2f0; }
+.embedding-job-history > small { color: #71807c; font-weight: 700; }
+.embedding-job-row { display: grid; grid-template-columns: 1.2fr 1.5fr .6fr 1fr; gap: 8px; padding: 7px 9px; border-bottom: 1px solid #edf2f0; color: #71807c; font-size: 10px; }
+.rag-trend { margin-top: 16px; padding-top: 12px; border-top: 1px solid #edf2f0; }
+.rag-trend-header { display: flex; justify-content: space-between; align-items: center; color: #71807c; font-size: 10px; }
+.rag-trend-header > small { font-weight: 700; }
+.rag-trend-header > span { display: inline-flex; align-items: center; gap: 5px; }
+.trend-key { width: 14px; height: 3px; margin-left: 6px; border-radius: 3px; background: #31836f; }
+.trend-key.top3 { background: #4f8fc1; }
+.trend-key.mrr { background: #b27a3e; }
+.rag-trend svg { display: block; width: 100%; height: 180px; margin-top: 4px; overflow: visible; }
+.rag-trend svg line { stroke: #e8efed; stroke-width: 1; }
+.trend-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.trend-line.top1, .trend-dot.top1 { stroke: #31836f; fill: #31836f; }
+.trend-line.top3, .trend-dot.top3 { stroke: #4f8fc1; fill: #4f8fc1; }
+.trend-line.mrr, .trend-dot.mrr { stroke: #b27a3e; fill: #b27a3e; }
+.rag-trend-axis { display: flex; justify-content: space-between; color: #a0aaa7; font-size: 9px; }
+.embedding-status { display: block; margin-top: 7px; font-size: 10px; line-height: 1.4; }
+.rag-playground-form { display: grid; grid-template-columns: minmax(0, 1fr) 150px 90px 150px auto; gap: 10px; align-items: end; padding: 15px; border: 1px solid #e4ece9; border-radius: 9px; background: #fbfefd; }
+.rag-playground-inquiry { grid-column: 1 / -1; }
+.rag-playground-form textarea, .rag-playground-form select, .rag-playground-form input { box-sizing: border-box; width: 100%; border: 1px solid #dce4e1; border-radius: 7px; padding: 10px 12px; color: #40504f; background: #fff; font: 12px inherit; outline: none; }
+.rag-playground-form textarea { resize: vertical; min-height: 78px; }
+.rag-playground-run { white-space: nowrap; }
+.rag-playground-note { margin: 10px 2px 16px; }
+.rag-playground-summary { display: grid; grid-template-columns: 1.3fr 1fr 1.2fr; gap: 10px; margin-bottom: 16px; }
+.rag-playground-summary > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 12px; border: 1px solid #e7efec; border-radius: 8px; background: #f5f8f7; }
+.rag-playground-summary small, .rag-playground-results-header span { color: #8b9995; font-size: 9px; letter-spacing: .08em; }
+.rag-playground-summary strong { color: #287b6b; font-size: 14px; overflow-wrap: anywhere; }
+.rag-playground-summary span { color: #71807c; font-size: 10px; overflow-wrap: anywhere; }
+.rag-playground-results { display: flex; flex-direction: column; gap: 8px; }
+.rag-playground-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; color: #40504f; font-size: 12px; }
+.rag-playground-card { padding: 13px; border: 1px solid #e7edeb; border-radius: 8px; background: #fff; }
+.rag-playground-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.rag-playground-card-head > div:first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rag-playground-card-head strong { color: #263b37; font-size: 12px; }
+.rag-playground-card-head span, .rag-score-row, .rag-playground-card p { color: #71807c; font-size: 10px; }
+.rag-score { display: flex; flex-direction: column; align-items: end; white-space: nowrap; }
+.rag-score b { color: #31836f; font-size: 16px; }
+.rag-score small { color: #8b9995; font-size: 9px; }
+.rag-score-row { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; padding-top: 9px; border-top: 1px solid #edf2f0; }
+.rag-score-row b { color: #40504f; }
+.rag-reasons { margin: 9px 0 0; }
+.rag-unmet { margin: 6px 0 0; color: #b55b50 !important; }
+.rag-playground-empty { margin-top: 14px; padding: 28px; border: 1px dashed #dce8e4; border-radius: 8px; color: #8b9995; text-align: center; font-size: 11px; }
+.rag-match-status { display: flex; flex-direction: column; gap: 4px; margin: 0 0 14px; padding: 11px 13px; border: 1px solid; border-radius: 8px; font-size: 10px; }
+.rag-match-status strong { font-size: 11px; }
+.rag-match-status span { opacity: .82; }
+.rag-match-reliable { border-color: #b9dfd2; background: #f1fbf7; color: #287b6b; }
+.rag-match-review { border-color: #ead6aa; background: #fffaf0; color: #927027; }
+.rag-match-no_reliable_match { border-color: #f0c9c4; background: #fff5f3; color: #a34e47; }
+.rag-reranker-status { margin: -4px 0 14px; color: #71807c; font-size: 10px; }
+.success-status { color: #31836f; }
 @media (max-width: 900px) {
+  .rag-playground-form { grid-template-columns: 1fr 1fr; }
+  .rag-playground-inquiry { grid-column: 1 / -1; }
+  .rag-playground-run { grid-column: 1 / -1; justify-self: start; }
+  .rag-playground-summary { grid-template-columns: 1fr; }
   body { min-width: 0; }
   .app-shell { display: block; }
   .sidebar { width: 100%; padding: 14px 18px; display: block; }
@@ -742,6 +1062,7 @@ onMounted(() => {
   .product-panel .candidate-detail.inline { grid-template-columns: 1fr; }
   .product-panel .candidate-detail.inline .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-steps { grid-template-columns: 1fr 1fr; }
+  .rag-miss { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   .main-content { padding: 18px 12px 30px; }

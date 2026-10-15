@@ -76,6 +76,16 @@ export DATABASE_URL='mysql+pymysql://tradepilot:URL_SAFE_PASSWORD@127.0.0.1:3306
 
 The application also seeds deterministic demo products, inventory, and customers on startup.
 
+### Product catalog seed data
+
+The demo catalog is defined in `backend/src/tradepilot/seed.py` and the matching
+initial stock in `backend/src/tradepilot/inventory.py`. The startup seed is
+idempotent: it inserts missing SKUs only, so editing a product or adjusting its
+stock in the UI is not overwritten when a container restarts. After adding a
+new SKU, restart the backend with Docker Compose; the product index calibration
+will synchronize the active MySQL products to Qdrant when semantic search is
+enabled. Do not delete the MySQL or Qdrant volumes when applying catalog changes.
+
 ## Main API endpoints
 
 | Method | Endpoint | Purpose |
@@ -129,12 +139,14 @@ Important settings include `DATABASE_URL`, `CORS_ORIGINS`, `API_DOCS_ENABLED`, `
 
 The app supports the rules engine, local Ollama, OpenAI-compatible APIs, DeepSeek, and Kimi/Moonshot. Configure `OPENAI_COMPATIBLE_*`, `DEEPSEEK_*`, or `KIMI_*` backend environment variables. Keep provider keys out of frontend configuration and Git; see [DEPLOYMENT.md](DEPLOYMENT.md) for examples.
 
+AI configuration persistence: use the root `.env` file (or deployment-platform secrets) for `AI_PROVIDER`, provider API keys, Base URLs, model names, and timeout values. Docker Compose passes these values into the backend on every container start, so they survive backend restarts. The web AI settings panel can apply temporary runtime overrides, but those overrides are intentionally not written to MySQL or `.env`; put final values in `.env` and restart the backend before committing a deployment change.
+
 See [DEPLOYMENT.md](DEPLOYMENT.md) for authentication, Docker, Ollama, production, and GitHub upload checks.
 
 ## Known limitations
 
 - SQLite remains the default for direct local development; Docker Compose uses MySQL 8.4.
-- Inquiry parsing supports the rules engine and optional configured model providers; product retrieval uses deterministic matching and scoring rather than a vector database.
+- Inquiry parsing supports the rules engine and optional configured model providers; product retrieval supports deterministic matching plus optional Qdrant semantic search.
 - Email generation creates drafts only.
 - Multi-tenant isolation, ERP/CRM integration, and real email delivery are not implemented.
 

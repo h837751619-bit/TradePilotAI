@@ -4,8 +4,12 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Optional
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -13,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import Session
 
 from .ai_provider import OllamaProvider, OpenAICompatibleProvider, parse_json_object
@@ -36,8 +40,8 @@ from .customer import (
 )
 from .db import get_session, make_session_factory
 from .email import generate_email_draft
-from .evaluation import evaluate_dataset
-from .inquiry import parse_inquiry
+from .evaluation import evaluate_dataset, evaluate_rag_dataset
+from .inquiry import InquiryRequirements, parse_inquiry
 from .inventory import (
     Inventory,
     InventoryAdjustment,
@@ -47,9 +51,26 @@ from .inventory import (
     reserve_inventory,
     seed_inventory,
 )
-from .models import AgentRun, ApprovalHistory, Product, QuoteRecord, RefreshToken, User
+from .models import (
+    AgentRun,
+    ApprovalHistory,
+    EmbeddingRebuildJob,
+    Product,
+    QuoteRecord,
+    RagEvaluationRun,
+    RefreshToken,
+    User,
+)
 from .product_matching import rank_product_candidates
 from .quote import QuoteDraft
+from .rag.explanations import (
+    attach_ai_explanations,
+    attach_fallback_explanations,
+    explain_product_candidates,
+)
+from .rag.products import build_product_document
+from .rag.reranker import ProductReranker
+from .rag.vector_store import ProductVectorStore
 from .rate_limit import InMemoryRateLimiter
 from .risk import assess_quote_risk
 from .schemas import ProductResponse
@@ -64,6 +85,19 @@ class WorkflowRequest(BaseModel):
     inquiry: str = Field(min_length=1)
     customer_name: str = ""
     selected_sku: Optional[str] = None
+    quantity: Optional[int] = Field(default=None, ge=1)
+    destination_country: Optional[str] = None
+    project_type: Optional[str] = None
+    product_keywords: Optional[list[str]] = None
+    budget_usd: Optional[float] = Field(default=None, ge=0)
+    max_lead_time_days: Optional[int] = Field(default=None, ge=1)
+
+
+class RagPlaygroundRequest(BaseModel):
+    inquiry: str = Field(min_length=1)
+    mode: str = Field(default="semantic", pattern="^(rules|semantic)$")
+    top_k: int = Field(default=5, ge=1, le=20)
+    score_threshold: float = Field(default=0.45, ge=0, le=1)
 
 
 class CustomerPayload(BaseModel):
@@ -75,6 +109,19 @@ class CustomerPayload(BaseModel):
 
 class AIProviderRequest(BaseModel):
     provider: str = Field(pattern="^(rules|ollama|openai_compatible|deepseek|kimi)$")
+
+
+class AIProviderConfigUpdate(BaseModel):
+    provider: str = Field(pattern="^(rules|ollama|openai_compatible|deepseek|kimi)$")
+    base_url: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    model: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    timeout_seconds: Optional[float] = Field(default=None, gt=0, le=300)
+    # Write-only by contract: this value is applied in memory and never returned.
+    api_key: Optional[str] = Field(default=None, max_length=500)
+
+
+class EmbeddingProfileRequest(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=200)
 
 
 class LoginRequest(BaseModel):
@@ -135,6 +182,28 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
     if configured_ai_provider in {"openai_compatible", "deepseek", "kimi"} and not getattr(settings, f"{configured_ai_provider}_api_key").strip():
         configured_ai_provider = "rules"
     active_ai_provider = {"value": configured_ai_provider}
+    active_embedding_profile = {"id": f"{settings.embedding_provider}:{settings.embedding_model}", "provider": settings.embedding_provider, "model": settings.embedding_model}
+    embedding_jobs: dict[str, dict] = {}
+    embedding_jobs_lock = Lock()
+    embedding_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embedding-rebuild")
+    index_rebuild_lock = Lock()
+    index_rebuild_state = {"queued": False}
+    vector_store = ProductVectorStore(
+        settings.ollama_base_url, settings.qdrant_url, settings.embedding_model, settings.qdrant_collection,
+        settings.semantic_search_timeout_seconds, settings.embedding_provider,
+    ) if settings.semantic_search_enabled else None
+    reranker = ProductReranker(settings.reranker_model, settings.reranker_enabled)
+
+    def sync_product_index(product: Product) -> None:
+        if vector_store is not None:
+            try:
+                if product.is_active:
+                    vector_store.upsert_product(product)
+                else:
+                    vector_store.delete_product(product.sku)
+            except (OSError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError):
+                logger.exception("Product vector index sync failed for sku=%s", product.sku)
+                schedule_index_rebuild(f"product sync failed for {product.sku}")
 
     def make_ai_provider(provider_id: str, *, tag_generation: bool = False):
         if provider_id == "ollama":
@@ -191,9 +260,44 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         seed_inventory(session)
         seed_customers(session)
         seed_auth_user(session, settings.auth_username, settings.auth_password_hash, settings.auth_role)
+        interrupted_jobs = session.scalars(select(EmbeddingRebuildJob).where(EmbeddingRebuildJob.status.in_(["queued", "running"]))).all()
+        for interrupted in interrupted_jobs:
+            interrupted.status = "failed"
+            interrupted.error = "Embedding rebuild interrupted by service restart"
+        if interrupted_jobs:
+            session.commit()
 
     def session_dependency():
         yield from get_session(factory)
+
+    def schedule_index_rebuild(reason: str) -> None:
+        """Queue one eventual-consistency rebuild after a product sync failure."""
+        if vector_store is None:
+            return
+        with index_rebuild_lock:
+            if index_rebuild_state["queued"]:
+                return
+            index_rebuild_state["queued"] = True
+
+        def rebuild() -> None:
+            try:
+                with factory() as rebuild_session:
+                    vector_store.rebuild(rebuild_session)
+                logger.info("Product vector index reconciled after %s", reason)
+            except (OSError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError):
+                logger.exception("Product vector index reconciliation failed after %s", reason)
+            finally:
+                with index_rebuild_lock:
+                    index_rebuild_state["queued"] = False
+
+        embedding_executor.submit(rebuild)
+
+    @app.on_event("startup")
+    async def reconcile_product_index_on_startup() -> None:
+        # Compose deployments can have MySQL and Qdrant volumes restored independently.
+        # Reconcile once in the background so a stale vector index cannot persist across restarts.
+        if vector_store is not None and settings.app_env == "docker":
+            schedule_index_rebuild("service startup")
 
     def unique_quote_records(records: list[QuoteRecord]) -> list[QuoteRecord]:
         seen: set[tuple] = set()
@@ -354,6 +458,113 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
             ],
         }
 
+    @app.get("/api/settings/ai")
+    def ai_settings(request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        provider_specs = [
+            ("rules", "Rule engine", "", "", None, None),
+            ("ollama", "Ollama / Qwen", settings.ollama_base_url, settings.ollama_model, None, settings.ollama_tag_timeout_seconds),
+            ("openai_compatible", "Online model API", settings.openai_compatible_base_url, settings.openai_compatible_model, settings.openai_compatible_api_key, settings.openai_compatible_timeout_seconds),
+            ("deepseek", "DeepSeek", settings.deepseek_base_url, settings.deepseek_model, settings.deepseek_api_key, settings.deepseek_timeout_seconds),
+            ("kimi", "Kimi / Moonshot", settings.kimi_base_url, settings.kimi_model, settings.kimi_api_key, settings.kimi_timeout_seconds),
+        ]
+        return {
+            "active": active_ai_provider["value"],
+            "providers": [
+                {
+                    "id": provider_id,
+                    "name": name,
+                    "base_url": base_url,
+                    "model": model,
+                    "timeout_seconds": timeout,
+                    "api_key_configured": bool(api_key.strip()) if isinstance(api_key, str) else False,
+                    "available": provider_id in {"rules", "ollama"} or bool(api_key and api_key.strip()),
+                }
+                for provider_id, name, base_url, model, api_key, timeout in provider_specs
+            ],
+            "api_key_storage": "runtime_only",
+        }
+
+    @app.patch("/api/settings/ai")
+    def update_ai_settings(payload: AIProviderConfigUpdate, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session, {"admin"})
+        provider = payload.provider
+        prefix = "openai_compatible" if provider == "openai_compatible" else provider
+        if payload.base_url is not None and provider != "rules":
+            setattr(settings, f"{prefix}_base_url", payload.base_url.strip().rstrip("/"))
+        if payload.model is not None and provider != "rules":
+            setattr(settings, f"{prefix}_model", payload.model.strip())
+        if payload.timeout_seconds is not None and provider != "rules":
+            timeout_attr = "ollama_tag_timeout_seconds" if provider == "ollama" else f"{prefix}_timeout_seconds"
+            setattr(settings, timeout_attr, payload.timeout_seconds)
+        if payload.api_key is not None and provider in {"openai_compatible", "deepseek", "kimi"}:
+            setattr(settings, f"{prefix}_api_key", payload.api_key.strip())
+        if provider in {"openai_compatible", "deepseek", "kimi"} and not getattr(settings, f"{prefix}_api_key").strip():
+            if active_ai_provider["value"] == provider:
+                active_ai_provider["value"] = "rules"
+        elif provider == "rules":
+            active_ai_provider["value"] = "rules"
+        else:
+            active_ai_provider["value"] = provider
+        return {"active": active_ai_provider["value"], "updated": provider, "api_key_configured": bool(getattr(settings, f"{prefix}_api_key", "").strip()) if provider in {"openai_compatible", "deepseek", "kimi"} else False}
+
+    @app.post("/api/settings/ai/test")
+    def test_ai_connection(payload: AIProviderRequest, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session, {"admin"})
+        started = time.perf_counter()
+        if payload.provider == "rules":
+            return {"provider": "rules", "success": True, "model": "rules-v1", "latency_ms": 0, "message": "Rule engine is ready"}
+        try:
+            provider = make_ai_provider(payload.provider, tag_generation=True)
+            if provider is None:
+                return {"provider": payload.provider, "success": False, "model": None, "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Provider is not configured"}
+            response = provider.complete("Reply with OK only.")
+            return {"provider": payload.provider, "success": True, "model": response.model, "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Connection succeeded"}
+        except (OSError, TimeoutError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            logger.warning("AI provider connection test failed for %s: %s", payload.provider, exc)
+            return {"provider": payload.provider, "success": False, "model": getattr(settings, f"{payload.provider}_model", None), "latency_ms": round((time.perf_counter() - started) * 1000), "message": f"Connection failed: {exc}"}
+
+    @app.get("/api/settings/ai/diagnostics")
+    def ai_diagnostics(request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        checks: list[dict] = []
+
+        started = time.perf_counter()
+        try:
+            session.execute(text("SELECT 1"))
+            checks.append({"id": "mysql", "name": "MySQL", "status": "ok", "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Database connection is healthy"})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MySQL diagnostics failed: %s", exc)
+            checks.append({"id": "mysql", "name": "MySQL", "status": "error", "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Database connection failed"})
+
+        if settings.semantic_search_enabled:
+            started = time.perf_counter()
+            try:
+                with urlopen(UrlRequest(f"{settings.qdrant_url.rstrip('/')}/collections"), timeout=3.0) as response:
+                    response.read(1)
+                checks.append({"id": "qdrant", "name": "Qdrant", "status": "ok", "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Vector service is reachable"})
+            except (OSError, TimeoutError, ValueError) as exc:
+                logger.warning("Qdrant diagnostics failed: %s", exc)
+                checks.append({"id": "qdrant", "name": "Qdrant", "status": "error", "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Vector service is unreachable"})
+        else:
+            checks.append({"id": "qdrant", "name": "Qdrant", "status": "disabled", "latency_ms": 0, "message": "Semantic search is disabled"})
+
+        if settings.ollama_base_url.strip():
+            started = time.perf_counter()
+            try:
+                with urlopen(UrlRequest(f"{settings.ollama_base_url.rstrip('/')}/api/tags"), timeout=3.0) as response:
+                    response.read(1)
+                checks.append({"id": "ollama", "name": "Ollama", "status": "ok", "latency_ms": round((time.perf_counter() - started) * 1000), "message": f"Endpoint reachable ({settings.ollama_model})"})
+            except (OSError, TimeoutError, ValueError) as exc:
+                logger.warning("Ollama diagnostics failed: %s", exc)
+                checks.append({"id": "ollama", "name": "Ollama", "status": "error", "latency_ms": round((time.perf_counter() - started) * 1000), "message": "Endpoint is unreachable"})
+
+        online_provider_ids = ("openai_compatible", "deepseek", "kimi")
+        for provider_id in online_provider_ids:
+            configured = bool(getattr(settings, f"{provider_id}_api_key").strip())
+            checks.append({"id": provider_id, "name": provider_id, "status": "configured" if configured else "not_configured", "latency_ms": 0, "message": "API key configured; use Test connection to verify endpoint" if configured else "API key is not configured"})
+        return {"active": active_ai_provider["value"], "checks": checks}
+
     @app.post("/api/ai/providers")
     def set_ai_provider(payload: AIProviderRequest, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
         authorize_if_enabled(request, session, {"admin"})
@@ -450,6 +661,7 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
             setattr(product, field, value)
         session.commit()
         session.refresh(product)
+        sync_product_index(product)
         return {"id": product.id, "sku": product.sku, "name": product.name, "material": product.material, "colors": product.colors, "match_tags": product.match_tags, "min_order_quantity": product.min_order_quantity, "lead_time_days": product.lead_time_days, "unit_price_usd": product.unit_price_usd, "is_active": product.is_active}
 
     @app.patch("/api/products/{sku}/inventory")
@@ -509,6 +721,7 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         session.add(product)
         session.commit()
         session.refresh(product)
+        sync_product_index(product)
         return {"id": product.id, "sku": product.sku, "name": product.name, "category": product.category, "description": product.description, "material": product.material, "colors": product.colors, "match_tags": product.match_tags, "min_order_quantity": product.min_order_quantity, "lead_time_days": product.lead_time_days, "unit_price_usd": product.unit_price_usd, "is_active": product.is_active}
 
     @app.delete("/api/products/{sku}", status_code=204)
@@ -520,6 +733,93 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         product.is_active = False
         session.commit()
 
+        sync_product_index(product)
+
+    @app.post("/api/products/rebuild-semantic-index")
+    def rebuild_semantic_index(request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session, {"admin"})
+        if vector_store is None:
+            raise HTTPException(status_code=409, detail="Semantic search is not enabled")
+        try:
+            count = vector_store.rebuild(session)
+        except (OSError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
+            logger.exception("Product vector index rebuild failed")
+            raise HTTPException(status_code=503, detail="Semantic index unavailable") from exc
+        return {"indexed_products": count, "embedding_model": active_embedding_profile["model"]}
+
+    @app.get("/api/settings/embeddings")
+    def embedding_settings(request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        return {"active": active_embedding_profile, "profiles": settings.embedding_profile_options}
+
+    @app.get("/api/settings/embeddings/jobs/{job_id}")
+    def embedding_job_status(job_id: str, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        record = session.scalar(select(EmbeddingRebuildJob).where(EmbeddingRebuildJob.job_id == job_id))
+        if record is None:
+            raise HTTPException(status_code=404, detail="Embedding job not found")
+        return {"job_id": record.job_id, "status": record.status, "profile": {"id": record.profile_id, "provider": record.embedding_provider, "model": record.embedding_model}, "indexed_products": record.indexed_products, "processed_products": record.processed_products, "total_products": record.total_products, "progress_percent": record.progress_percent, "error": record.error}
+
+    @app.get("/api/settings/embeddings/jobs")
+    def embedding_job_history(request: Request, limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0), session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        total = session.scalar(select(func.count()).select_from(EmbeddingRebuildJob)) or 0
+        records = session.scalars(select(EmbeddingRebuildJob).order_by(desc(EmbeddingRebuildJob.created_at)).offset(offset).limit(limit)).all()
+        items = [{"job_id": record.job_id, "status": record.status, "profile": {"id": record.profile_id, "provider": record.embedding_provider, "model": record.embedding_model}, "indexed_products": record.indexed_products, "processed_products": record.processed_products, "total_products": record.total_products, "progress_percent": record.progress_percent, "error": record.error, "created_at": record.created_at.isoformat(), "updated_at": record.updated_at.isoformat()} for record in records]
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @app.post("/api/settings/embeddings")
+    def switch_embedding_profile(payload: EmbeddingProfileRequest, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session, {"admin"})
+        profile = next((item for item in settings.embedding_profile_options if item["id"] == payload.profile_id), None)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Embedding profile not configured")
+        if not settings.semantic_search_enabled:
+            raise HTTPException(status_code=409, detail="Semantic search is not enabled")
+        with embedding_jobs_lock:
+            if any(job["status"] in {"queued", "running"} for job in embedding_jobs.values()):
+                raise HTTPException(status_code=409, detail="Another embedding rebuild is already running")
+            job_id = str(uuid4())
+            embedding_jobs[job_id] = {"status": "queued", "profile": profile, "indexed_products": None, "processed_products": 0, "total_products": None, "progress_percent": 0, "error": None}
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.add(EmbeddingRebuildJob(job_id=job_id, profile_id=profile["id"], embedding_provider=profile["provider"], embedding_model=profile["model"], status="queued", created_at=now, updated_at=now))
+        session.commit()
+
+        def update_job_state(**updates: object) -> None:
+            with embedding_jobs_lock:
+                embedding_jobs[job_id].update(updates)
+            with factory() as state_session:
+                state_record = state_session.scalar(select(EmbeddingRebuildJob).where(EmbeddingRebuildJob.job_id == job_id))
+                if state_record is None:
+                    return
+                for key, value in updates.items():
+                    setattr(state_record, key, value)
+                state_record.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                state_session.commit()
+
+        def rebuild_embedding_job() -> None:
+            nonlocal vector_store
+            update_job_state(status="running")
+            try:
+                candidate_store = ProductVectorStore(
+                    settings.ollama_base_url, settings.qdrant_url, profile["model"], settings.qdrant_collection,
+                    settings.semantic_search_timeout_seconds, profile["provider"],
+                )
+                def update_progress(processed: int, total: int) -> None:
+                    update_job_state(processed_products=processed, total_products=total, progress_percent=round(processed / total * 100) if total else 100)
+
+                with factory() as worker_session:
+                    indexed = candidate_store.rebuild(worker_session, progress_callback=update_progress)
+                vector_store = candidate_store
+                active_embedding_profile.update(profile)
+                update_job_state(status="succeeded", indexed_products=indexed, progress_percent=100)
+            except (OSError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
+                logger.exception("Embedding profile switch failed")
+                update_job_state(status="failed", error=str(exc))
+
+        embedding_executor.submit(rebuild_embedding_job)
+        return {"job_id": job_id, "status": "queued", "profile": profile}
+
     @app.post("/api/workflow/inquiry-to-quote")
     def inquiry_to_quote(request: Request, payload: WorkflowRequest, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
         authorize_if_enabled(request, session, {"admin", "approver"})
@@ -529,11 +829,62 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         try:
             customer_name = payload.customer_name.strip() or extract_customer_name(payload.inquiry)
             provider = make_ai_provider(active_ai_provider["value"])
-            result = create_quote_from_inquiry(session, payload.inquiry, customer_name, provider, payload.selected_sku)
+            cached_selection = payload.selected_sku is not None and payload.quantity is not None
+            parsed_inquiry = None
+            if cached_selection:
+                parsed_inquiry = InquiryRequirements(
+                    raw_text=payload.inquiry,
+                    quantity=payload.quantity,
+                    destination_country=payload.destination_country,
+                    project_type=payload.project_type,
+                    product_keywords=payload.product_keywords or [],
+                    budget_usd=payload.budget_usd,
+                    max_lead_time_days=payload.max_lead_time_days,
+                    ai_provider=active_ai_provider["value"],
+                )
+            semantic_matches = None
+            retrieval_mode = "rules"
+            if vector_store is not None and not cached_selection:
+                try:
+                    semantic_matches = vector_store.search(payload.inquiry)
+                    retrieval_mode = "semantic" if semantic_matches else "rules"
+                except (OSError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError):
+                    logger.exception("Product semantic search failed; using rule matching")
+                    retrieval_mode = "rules_fallback"
+            result = create_quote_from_inquiry(
+                session, payload.inquiry, customer_name, provider, payload.selected_sku,
+                semantic_matches=semantic_matches, parsed_inquiry=parsed_inquiry,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        product_matches = rank_product_candidates(
+            session,
+            result.inquiry.product_keywords,
+            result.inquiry.quantity,
+            result.inquiry.project_type,
+            budget_usd=result.inquiry.budget_usd,
+            max_lead_time_days=result.inquiry.max_lead_time_days,
+            keyword_weight=settings.product_keyword_weight,
+            project_weight=settings.product_project_weight,
+            quantity_weight=settings.product_quantity_weight,
+            semantic_matches=semantic_matches,
+        )
+        explanation_mode = "rules"
+        explanation_provider = "rules"
+        explanation_model = None
+        attach_fallback_explanations(product_matches)
+        if not cached_selection and settings.rag_explanations_enabled and provider is not None and product_matches:
+            try:
+                explanations, explanation_provider, explanation_model = explain_product_candidates(
+                    session, result.inquiry.raw_text, product_matches, provider
+                )
+                attach_ai_explanations(product_matches, explanations)
+                explanation_mode = "grounded_ai"
+            except (OSError, TimeoutError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                logger.exception("Grounded product explanation failed; using rule explanations")
+                explanation_mode = "rules_fallback"
         risk = assess_quote_risk(result.quote)
         email = generate_email_draft(result.inquiry, result.quote)
         quote_record = None
@@ -586,6 +937,10 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
         session.commit()
         return {
             "run_id": run_id,
+            "retrieval_mode": retrieval_mode,
+            "explanation_mode": explanation_mode,
+            "explanation_provider": explanation_provider,
+            "explanation_model": explanation_model,
             "customer": {
                 "matched": customer is not None,
                 "company_name": customer.company_name if customer else customer_name,
@@ -603,7 +958,7 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
                 "max_lead_time_days": result.inquiry.max_lead_time_days,
                 "ai_provider": result.inquiry.ai_provider,
             },
-            "product_matches": rank_product_candidates(session, result.inquiry.product_keywords, result.inquiry.quantity, result.inquiry.project_type, budget_usd=result.inquiry.budget_usd, max_lead_time_days=result.inquiry.max_lead_time_days, keyword_weight=settings.product_keyword_weight, project_weight=settings.product_project_weight, quantity_weight=settings.product_quantity_weight),
+            "product_matches": product_matches,
             "quote": {
                 "id": quote_record.id if quote_record else None,
                 "customer_name": result.quote.customer_name,
@@ -843,10 +1198,185 @@ def create_app(database_url: Optional[str] = None) -> FastAPI:
             for record in records
         ]
 
+    @app.post("/api/rag/playground")
+    def rag_playground(payload: RagPlaygroundRequest, request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        """Run an isolated RAG experiment without quotes, inventory, or agent-run writes."""
+        authorize_if_enabled(request, session)
+        started_at = time.perf_counter()
+
+        parse_started_at = time.perf_counter()
+        parsed = parse_inquiry(payload.inquiry)
+        parse_ms = round((time.perf_counter() - parse_started_at) * 1000, 2)
+
+        semantic_matches: dict[str, float] | None = None
+        retrieval_mode = "rules"
+        retrieval_started_at = time.perf_counter()
+        if payload.mode == "semantic":
+            if vector_store is None:
+                raise HTTPException(status_code=409, detail="Semantic search is not enabled")
+            try:
+                semantic_matches = vector_store.search(
+                    payload.inquiry,
+                    limit=max(payload.top_k, 10) if reranker.enabled else payload.top_k,
+                    min_score=payload.score_threshold,
+                )
+                retrieval_mode = "semantic" if semantic_matches else "semantic_empty"
+            except (OSError, TimeoutError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
+                logger.exception("RAG playground semantic search failed; using rule matching")
+                retrieval_mode = "rules_fallback"
+                semantic_matches = None
+                retrieval_error = str(exc)
+            else:
+                retrieval_error = None
+        else:
+            retrieval_error = None
+        retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 2)
+
+        ranking_started_at = time.perf_counter()
+        candidate_limit = max(payload.top_k, 10) if reranker.enabled else payload.top_k
+        candidates = rank_product_candidates(
+            session,
+            parsed.product_keywords,
+            parsed.quantity,
+            parsed.project_type,
+            budget_usd=parsed.budget_usd,
+            max_lead_time_days=parsed.max_lead_time_days,
+            limit=candidate_limit,
+            keyword_weight=settings.product_keyword_weight,
+            project_weight=settings.product_project_weight,
+            quantity_weight=settings.product_quantity_weight,
+            semantic_matches=semantic_matches,
+        )
+        attach_fallback_explanations(candidates)
+        ranking_ms = round((time.perf_counter() - ranking_started_at) * 1000, 2)
+        reranker_started_at = time.perf_counter()
+        reranker_error = None
+        reranker_scores: list[float] = []
+        if reranker.enabled and candidates:
+            try:
+                products_by_sku = {
+                    product.sku: product
+                    for product in session.scalars(
+                        select(Product).where(Product.sku.in_([candidate["sku"] for candidate in candidates]))
+                    ).all()
+                }
+                documents = [
+                    build_product_document(products_by_sku[candidate["sku"]]).text
+                    for candidate in candidates
+                    if candidate["sku"] in products_by_sku
+                ]
+                reranker_scores = reranker.score(payload.inquiry, documents)
+                for candidate, reranker_score in zip(candidates, reranker_scores):
+                    candidate["reranker_score"] = round(reranker_score, 4)
+                    candidate["score"] = min(100, round(candidate["score"] * 0.6 + reranker_score * 40))
+                    candidate["reasons"].append(f"Reranker match {reranker_score:.2f}")
+                candidates.sort(key=lambda item: (-item["inventory_sufficient"], -item["score"], -(item.get("semantic_score") or 0), item["sku"]))
+                candidates = candidates[:payload.top_k]
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                reranker_error = str(exc)
+                logger.exception("RAG reranker failed; using base ranking")
+        reranker_ms = round((time.perf_counter() - reranker_started_at) * 1000, 2)
+        best_score = candidates[0]["score"] if candidates else 0
+        match_status = "reliable" if best_score >= 60 else "review" if best_score >= 45 else "no_reliable_match"
+
+        result = {
+            "mode": payload.mode,
+            "retrieval_mode": retrieval_mode,
+            "parsed": {
+                "quantity": parsed.quantity,
+                "destination_country": parsed.destination_country,
+                "project_type": parsed.project_type,
+                "product_keywords": parsed.product_keywords,
+                "budget_usd": parsed.budget_usd,
+                "max_lead_time_days": parsed.max_lead_time_days,
+            },
+            "timings": {
+                "parse_ms": parse_ms,
+                "retrieval_ms": retrieval_ms,
+                "ranking_ms": ranking_ms,
+                "reranker_ms": reranker_ms,
+                "total_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            },
+            "match_status": match_status,
+            "match_threshold": 45,
+            "reranker": {
+                "enabled": reranker.enabled,
+                "model": reranker.model_name if reranker.enabled else None,
+                "scores_returned": len(reranker_scores),
+                "error": reranker_error,
+            },
+            "candidates": candidates,
+        }
+        if retrieval_error:
+            result["retrieval_error"] = retrieval_error
+        return result
+
     @app.get("/api/evaluation")
     def evaluation(request: Request, session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
         authorize_if_enabled(request, session)
         dataset = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/evaluation/inquiries.json"))
         return evaluate_dataset(dataset)
+
+    @app.get("/api/evaluation/rag")
+    def rag_evaluation(request: Request, mode: str = Query(default="semantic", pattern="^(rules|semantic)$"), session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        dataset = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/evaluation/rag_inquiries.json"))
+        if mode == "semantic":
+            if vector_store is None:
+                raise HTTPException(status_code=409, detail="Semantic search is not enabled")
+            try:
+                return evaluate_rag_dataset(dataset, vector_store.search)
+            except (OSError, TimeoutError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=503, detail="Semantic evaluation unavailable") from exc
+        return evaluate_rag_dataset(dataset)
+
+    @app.post("/api/evaluation/rag/run")
+    def run_rag_evaluation(request: Request, mode: str = Query(default="semantic", pattern="^(rules|semantic)$"), session: Session = Depends(session_dependency)) -> dict:  # noqa: B008
+        authorize_if_enabled(request, session)
+        dataset = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/evaluation/rag_inquiries.json"))
+        if mode == "semantic":
+            if vector_store is None:
+                raise HTTPException(status_code=409, detail="Semantic search is not enabled")
+            try:
+                metrics = evaluate_rag_dataset(dataset, vector_store.search)
+            except (OSError, TimeoutError, ValueError, KeyError, ImportError, RuntimeError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=503, detail="Semantic evaluation unavailable") from exc
+        else:
+            metrics = evaluate_rag_dataset(dataset)
+        record = RagEvaluationRun(
+            **metrics,
+            embedding_provider=active_embedding_profile["provider"] if mode == "semantic" else "rules",
+            embedding_model=active_embedding_profile["model"] if mode == "semantic" else "rules",
+            retrieval_config={
+                "semantic_search_enabled": settings.semantic_search_enabled,
+                "semantic_search_timeout_seconds": settings.semantic_search_timeout_seconds,
+                "qdrant_collection": settings.qdrant_collection if mode == "semantic" else None,
+            },
+        )
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+        return {**metrics, "id": record.id, "created_at": record.created_at.isoformat() if record.created_at else None}
+
+    @app.get("/api/evaluation/rag/history")
+    def rag_evaluation_history(request: Request, limit: int = Query(default=20, ge=1, le=100), session: Session = Depends(session_dependency)) -> list[dict]:  # noqa: B008
+        authorize_if_enabled(request, session)
+        return [
+            {
+                "id": record.id,
+                "mode": record.mode,
+                "embedding_provider": record.embedding_provider,
+                "embedding_model": record.embedding_model,
+                "retrieval_config": record.retrieval_config,
+                "cases": record.cases,
+                "evaluated_cases": record.evaluated_cases,
+                "top1_recall": record.top1_recall,
+                "top3_recall": record.top3_recall,
+                "mrr": record.mrr,
+                "misses": record.misses,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+            for record in session.scalars(select(RagEvaluationRun).order_by(RagEvaluationRun.created_at.desc(), RagEvaluationRun.id.desc()).limit(limit)).all()
+        ]
 
     return app

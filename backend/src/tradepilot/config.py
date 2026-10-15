@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,16 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:8b"
     ollama_think: bool = False
     ollama_tag_timeout_seconds: float = 90.0
+    semantic_search_enabled: bool = False
+    embedding_provider: str = "huggingface"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_profiles_json: str = ""
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_collection: str = "tradepilot_products"
+    semantic_search_timeout_seconds: float = 10.0
+    rag_explanations_enabled: bool = True
+    reranker_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
     openai_compatible_api_key: str = ""
     openai_compatible_base_url: str = "https://api.openai.com/v1"
     openai_compatible_model: str = "gpt-4o-mini"
@@ -42,6 +53,18 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def embedding_profile_options(self) -> list[dict[str, str]]:
+        default = {"id": f"{self.embedding_provider}:{self.embedding_model}", "provider": self.embedding_provider, "model": self.embedding_model}
+        try:
+            configured = json.loads(self.embedding_profiles_json) if self.embedding_profiles_json.strip() else []
+        except json.JSONDecodeError:
+            configured = []
+        profiles = [item for item in configured if isinstance(item, dict) and item.get("id") and item.get("provider") and item.get("model")]
+        if not any(item["id"] == default["id"] for item in profiles):
+            profiles.insert(0, default)
+        return profiles
 
 
 @lru_cache

@@ -2,18 +2,33 @@ import type { Product } from './types'
 
 export type AIProviderId = 'rules' | 'ollama' | 'openai_compatible' | 'deepseek' | 'kimi'
 export interface AIProviderStatus { active: AIProviderId; providers: { id: AIProviderId; name: string; model?: string; available: boolean }[] }
+export interface AIProviderConfig { id: AIProviderId; name: string; base_url: string; model: string; timeout_seconds: number | null; api_key_configured: boolean; available: boolean }
+export interface AISettings { active: AIProviderId; providers: AIProviderConfig[]; api_key_storage: 'runtime_only' }
 export interface AuthStatus { enabled: boolean }
 export interface UserRecord { id: number; username: string; role: 'admin' | 'approver' | 'viewer'; is_active: boolean }
 
-let authToken = sessionStorage.getItem('tradepilot_access_token') ?? ''
-let refreshToken = sessionStorage.getItem('tradepilot_refresh_token') ?? ''
+const authStorage = window.localStorage
+const legacyAuthStorage = window.sessionStorage
+
+function readAuthValue(key: string): string {
+  const value = authStorage.getItem(key) ?? legacyAuthStorage.getItem(key) ?? ''
+  if (value && !authStorage.getItem(key)) authStorage.setItem(key, value)
+  return value
+}
+
+let authToken = readAuthValue('tradepilot_access_token')
+let refreshToken = readAuthValue('tradepilot_refresh_token')
+let refreshInFlight: Promise<void> | null = null
 
 function clearStoredAuth(): void {
   authToken = ''
   refreshToken = ''
-  sessionStorage.removeItem('tradepilot_access_token')
-  sessionStorage.removeItem('tradepilot_refresh_token')
-  sessionStorage.removeItem('tradepilot_role')
+  authStorage.removeItem('tradepilot_access_token')
+  authStorage.removeItem('tradepilot_refresh_token')
+  authStorage.removeItem('tradepilot_role')
+  legacyAuthStorage.removeItem('tradepilot_access_token')
+  legacyAuthStorage.removeItem('tradepilot_refresh_token')
+  legacyAuthStorage.removeItem('tradepilot_role')
 }
 
 async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}, retry = true): Promise<Response> {
@@ -21,12 +36,16 @@ async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}, retry 
   const url = String(input)
   if (response.status !== 401 || !retry || !refreshToken || url.includes('/api/auth/')) return response
   try {
-    await refreshSession()
+    if (!refreshInFlight) {
+      refreshInFlight = refreshSession().then(() => undefined).finally(() => { refreshInFlight = null })
+    }
+    await refreshInFlight
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${authToken}`)
     return apiFetch(input, { ...init, headers }, false)
   } catch {
     clearStoredAuth()
+    window.dispatchEvent(new Event('tradepilot-auth-invalid'))
     return response
   }
 }
@@ -45,9 +64,12 @@ export async function login(username: string, password: string): Promise<{ acces
   const result = await response.json() as { access_token: string; refresh_token: string; expires_in: number; role: UserRecord['role'] }
   authToken = result.access_token
   refreshToken = result.refresh_token
-  sessionStorage.setItem('tradepilot_access_token', authToken)
-  sessionStorage.setItem('tradepilot_refresh_token', refreshToken)
-  sessionStorage.setItem('tradepilot_role', result.role)
+  authStorage.setItem('tradepilot_access_token', authToken)
+  authStorage.setItem('tradepilot_refresh_token', refreshToken)
+  authStorage.setItem('tradepilot_role', result.role)
+  legacyAuthStorage.removeItem('tradepilot_access_token')
+  legacyAuthStorage.removeItem('tradepilot_refresh_token')
+  legacyAuthStorage.removeItem('tradepilot_role')
   return result
 }
 
@@ -57,9 +79,9 @@ export async function refreshSession(): Promise<{ access_token: string; refresh_
   const result = await response.json() as { access_token: string; refresh_token: string; role: UserRecord['role'] }
   authToken = result.access_token
   refreshToken = result.refresh_token
-  sessionStorage.setItem('tradepilot_access_token', authToken)
-  sessionStorage.setItem('tradepilot_refresh_token', refreshToken)
-  sessionStorage.setItem('tradepilot_role', result.role)
+  authStorage.setItem('tradepilot_access_token', authToken)
+  authStorage.setItem('tradepilot_refresh_token', refreshToken)
+  authStorage.setItem('tradepilot_role', result.role)
   return result
 }
 
@@ -72,7 +94,7 @@ function authHeaders(): Record<string, string> {
   return authToken ? { Authorization: `Bearer ${authToken}` } : {}
 }
 
-export function getAuthRole(): UserRecord['role'] | '' { return (sessionStorage.getItem('tradepilot_role') as UserRecord['role'] | null) ?? '' }
+export function getAuthRole(): UserRecord['role'] | '' { return (authStorage.getItem('tradepilot_role') ?? legacyAuthStorage.getItem('tradepilot_role') ?? '') as UserRecord['role'] | '' }
 
 export async function fetchUsers(): Promise<UserRecord[]> {
   const response = await apiFetch('/api/users', { headers: authHeaders() })
@@ -110,12 +132,118 @@ export async function setAIProvider(provider: AIProviderId): Promise<{ active: A
   return response.json() as Promise<{ active: AIProviderId }>
 }
 
+export async function fetchAISettings(): Promise<AISettings> {
+  const response = await apiFetch('/api/settings/ai', { headers: authHeaders() })
+  if (!response.ok) throw await apiError(response, 'Unable to load AI settings')
+  return response.json() as Promise<AISettings>
+}
+
+export async function updateAISettings(payload: { provider: AIProviderId; base_url?: string; model?: string; timeout_seconds?: number; api_key?: string }): Promise<{ active: AIProviderId; updated: AIProviderId; api_key_configured: boolean }> {
+  const response = await apiFetch('/api/settings/ai', { method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  if (!response.ok) throw await apiError(response, 'Unable to save AI settings')
+  return response.json()
+}
+
+export interface AIConnectionTestResult { provider: AIProviderId; success: boolean; model: string | null; latency_ms: number; message: string }
+
+export async function testAIConnection(provider: AIProviderId): Promise<AIConnectionTestResult> {
+  const response = await apiFetch('/api/settings/ai/test', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) })
+  if (!response.ok) throw await apiError(response, 'Unable to test AI connection')
+  return response.json() as Promise<AIConnectionTestResult>
+}
+
+export interface AIDiagnosticCheck { id: string; name: string; status: 'ok' | 'error' | 'disabled' | 'configured' | 'not_configured'; latency_ms: number; message: string }
+export interface AIDiagnostics { active: AIProviderId; checks: AIDiagnosticCheck[] }
+
+export async function fetchAIDiagnostics(): Promise<AIDiagnostics> {
+  const response = await apiFetch('/api/settings/ai/diagnostics', { headers: authHeaders() })
+  if (!response.ok) throw await apiError(response, 'Unable to load AI diagnostics')
+  return response.json() as Promise<AIDiagnostics>
+}
+
+export interface EmbeddingProfile { id: string; provider: string; model: string }
+export interface EmbeddingSettings { active: EmbeddingProfile; profiles: EmbeddingProfile[] }
+
+export async function fetchEmbeddingSettings(): Promise<EmbeddingSettings> {
+  const response = await apiFetch('/api/settings/embeddings')
+  if (!response.ok) throw await apiError(response, 'Unable to load embedding profiles')
+  return response.json() as Promise<EmbeddingSettings>
+}
+
+export interface EmbeddingSwitchJob { job_id: string; status: 'queued' | 'running' | 'succeeded' | 'failed'; profile: EmbeddingProfile; indexed_products: number | null; processed_products: number; total_products: number | null; progress_percent: number; error: string | null }
+
+export async function switchEmbeddingProfile(profileId: string, signal?: AbortSignal): Promise<EmbeddingSwitchJob> {
+  const response = await apiFetch('/api/settings/embeddings', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_id: profileId }), signal })
+  if (!response.ok) throw await apiError(response, 'Unable to switch embedding profile')
+  return response.json() as Promise<EmbeddingSwitchJob>
+}
+
+export async function fetchEmbeddingJob(jobId: string, signal?: AbortSignal): Promise<EmbeddingSwitchJob> {
+  const response = await apiFetch(`/api/settings/embeddings/jobs/${encodeURIComponent(jobId)}`, { signal })
+  if (!response.ok) throw await apiError(response, 'Unable to load embedding job')
+  return response.json() as Promise<EmbeddingSwitchJob>
+}
+
+export interface EmbeddingJobHistory { items: (EmbeddingSwitchJob & { created_at: string; updated_at: string })[]; total: number; limit: number; offset: number }
+
+export async function fetchEmbeddingJobs(limit = 6, offset = 0): Promise<EmbeddingJobHistory> {
+  const response = await apiFetch(`/api/settings/embeddings/jobs?limit=${limit}&offset=${offset}`)
+  if (!response.ok) throw await apiError(response, 'Unable to load embedding job history')
+  return response.json()
+}
+
 export interface WorkflowResult {
+  retrieval_mode: 'rules' | 'semantic' | 'rules_fallback'
+  explanation_mode: 'grounded_ai' | 'rules' | 'rules_fallback'
+  explanation_provider: string
+  explanation_model: string | null
   inquiry: { quantity: number | null; destination_country: string | null; project_type: string | null; product_keywords: string[]; budget_usd: number | null; max_lead_time_days: number | null; ai_provider: string }
   customer: { matched: boolean; company_name: string; country: string | null; contact_name: string | null; email: string | null }
   quote: { id: number | null; sku: string; quantity: number; unit_price_usd: number; total_price_usd: number; status: 'pending_selection' | 'draft' | 'approved' }
   risk: { requires_approval: boolean; reasons: string[] }
-  product_matches: { sku: string; name: string; score: number; reasons: string[]; unmet_conditions: string[]; inventory_available: number; inventory_sufficient: boolean; unit_price_usd: number; lead_time_days: number }[]
+  product_matches: { sku: string; name: string; score: number; semantic_score?: number | null; reasons: string[]; explanation: string; model_explanation?: string | null; evidence: { field: string; value: string | number }[]; unmet_conditions: string[]; inventory_available: number; inventory_sufficient: boolean; unit_price_usd: number; lead_time_days: number }[]
+}
+
+export interface RagPlaygroundResult {
+  mode: 'rules' | 'semantic'
+  retrieval_mode: 'rules' | 'semantic' | 'semantic_empty' | 'rules_fallback'
+  retrieval_error?: string
+  match_status: 'reliable' | 'review' | 'no_reliable_match'
+  match_threshold: number
+  parsed: {
+    quantity: number | null
+    destination_country: string | null
+    project_type: string | null
+    product_keywords: string[]
+    budget_usd: number | null
+    max_lead_time_days: number | null
+  }
+  timings: { parse_ms: number; retrieval_ms: number; ranking_ms: number; reranker_ms?: number; total_ms: number }
+  reranker: { enabled: boolean; model: string | null; scores_returned: number; error: string | null }
+  candidates: {
+    sku: string
+    name: string
+    score: number
+    semantic_score?: number | null
+    reasons: string[]
+    explanation?: string
+    unmet_conditions: string[]
+    inventory_available: number
+    inventory_sufficient: boolean
+    unit_price_usd: number
+    lead_time_days: number
+    reranker_score?: number | null
+  }[]
+}
+
+export async function runRagPlayground(payload: { inquiry: string; mode: 'rules' | 'semantic'; top_k: number; score_threshold: number }): Promise<RagPlaygroundResult> {
+  const response = await apiFetch('/api/rag/playground', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw await apiError(response, 'Unable to run RAG playground')
+  return response.json() as Promise<RagPlaygroundResult>
 }
 
 export async function searchProducts(query: string, includeInactive = false): Promise<Product[]> {
@@ -165,11 +293,11 @@ export async function suggestProductTags(sku: string): Promise<{ sku: string; pr
   return response.json()
 }
 
-export async function runInquiryWorkflow(inquiry: string, customerName = '', selectedSku?: string): Promise<WorkflowResult> {
+export async function runInquiryWorkflow(inquiry: string, customerName = '', selectedSku?: string, parsedInquiry?: WorkflowResult['inquiry']): Promise<WorkflowResult> {
   const response = await apiFetch('/api/workflow/inquiry-to-quote', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ inquiry, customer_name: customerName, selected_sku: selectedSku }),
+    body: JSON.stringify({ inquiry, customer_name: customerName, selected_sku: selectedSku, ...parsedInquiry }),
   })
   if (!response.ok) {
     const detail = await response.json().catch(() => ({})) as { detail?: string; error?: { message?: string } }
@@ -209,7 +337,7 @@ export interface QuoteRecord {
 export interface QuoteDetail extends QuoteRecord {
   risk: { requires_approval: boolean; reasons: string[] }
   email: { subject: string; body: string; status: string }
-  product_matches: { sku: string; name: string; score: number; reasons: string[]; unmet_conditions: string[] }[]
+  product_matches: { sku: string; name: string; score: number; semantic_score?: number | null; reasons: string[]; unmet_conditions: string[] }[]
   approval_history: { id: number; from_status: string; to_status: string; actor: string; created_at: string }[]
   inventory_movements: { id: number; sku: string; quantity: number; movement_type: 'reserve' | 'deduct' | 'release'; actor: string; created_at: string | null }[]
 }
@@ -296,4 +424,37 @@ export async function fetchEvaluation(): Promise<EvaluationMetrics> {
   const response = await apiFetch('/api/evaluation')
   if (!response.ok) throw new Error('Unable to load evaluation metrics')
   return response.json() as Promise<EvaluationMetrics>
+}
+
+export interface RagEvaluationMetrics {
+  id?: number
+  mode: 'rules' | 'semantic'
+  embedding_provider?: string
+  embedding_model?: string
+  retrieval_config?: Record<string, unknown>
+  cases: number
+  evaluated_cases: number
+  top1_recall: number
+  top3_recall: number
+  mrr: number
+  misses: { text: string; expected_sku: string; returned_skus: string[]; rank: number | null }[]
+  created_at?: string | null
+}
+
+export async function fetchRagEvaluation(mode: RagEvaluationMetrics['mode']): Promise<RagEvaluationMetrics> {
+  const response = await apiFetch(`/api/evaluation/rag?mode=${mode}`)
+  if (!response.ok) throw await apiError(response, 'Unable to load RAG evaluation metrics')
+  return response.json() as Promise<RagEvaluationMetrics>
+}
+
+export async function runRagEvaluation(mode: RagEvaluationMetrics['mode']): Promise<RagEvaluationMetrics> {
+  const response = await apiFetch(`/api/evaluation/rag/run?mode=${mode}`, { method: 'POST' })
+  if (!response.ok) throw await apiError(response, 'Unable to run RAG evaluation')
+  return response.json() as Promise<RagEvaluationMetrics>
+}
+
+export async function fetchRagEvaluationHistory(limit = 20): Promise<RagEvaluationMetrics[]> {
+  const response = await apiFetch(`/api/evaluation/rag/history?limit=${limit}`)
+  if (!response.ok) throw await apiError(response, 'Unable to load RAG evaluation history')
+  return response.json() as Promise<RagEvaluationMetrics[]>
 }

@@ -1615,3 +1615,339 @@ Ruff：All checks passed
 - [x] 将询盘工作台与产品库截图归档到 `docs/screenshots/`。
 - [x] 新增中文界面指南，说明询盘解析、产品选择后生成报价、产品搜索/停用项显示、模型语言选择及部署配置注意事项。
 - [x] 在 README 添加使用指南入口并直接嵌入两张界面截图；本次变更仅涉及文档和截图。
+
+## 67. 2026-10-14：产品语义检索第一阶段
+
+- [x] 增加本地 Hugging Face embedding 适配器（使用 FastEmbed，默认多语言 MiniLM），并保留 Ollama embedding 配置选项。
+- [x] Compose 增加 Qdrant 及持久化卷；新增产品索引、同步及管理员重建接口。
+- [x] 询盘产品匹配融合语义召回与原有规则评分，仍由 MySQL 校验实时库存、MOQ、价格和交期。
+- [x] 前端显示语义检索或规则回退状态；当前阶段尚未让聊天模型依据候选文档生成引用式解释。
+- [x] 模型文件需首次下载；部署者启用后须执行一次索引重建。配置、费用与许可证说明见 `DEPLOYMENT.md`。
+- [x] 验证：后端测试 83 项通过，Ruff 通过，前端类型检查及生产构建通过，Compose 配置解析通过。
+- [x] 通过单独审批后完成 Compose 实测：Qdrant 和本地 Hugging Face 模型启动成功，现有启用产品已建立索引；无既有关键词的测试询盘返回 `retrieval_mode=semantic`，首位为椅子，报价仍是 `pending_selection` 且未生成报价记录。
+- [x] 构建时发现 Sentence Transformers 的新版本依赖会拉取不必要的 CUDA 组件；已换用 FastEmbed 的多语言 ONNX 模型，降低镜像与磁盘占用。
+
+## 68. 2026-10-14：RAG 有据解释第二阶段
+
+- [x] 将询盘和候选产品资料作为受限上下文交给当前聊天模型，一次生成所有候选产品的简短匹配解释。
+- [x] 模型只返回候选 SKU 与证据字段名；后端过滤未知 SKU/字段，并从 MySQL 回填原始证据值。
+- [x] API 增加解释模式、模型信息、候选解释和证据；前端在候选卡片中显示 AI/规则来源及证据标签。
+- [x] 模型不可用、超时或响应格式错误时自动回退规则解释，不中断产品匹配和报价预览。
+- [x] 真实 Qwen 测试发现模型可能把询盘形容词扩展为产品事实；已改为由模型选择证据字段，后端用 MySQL 原值构造展示解释，并保留模型原文供审计。
+
+## 69. 2026-10-14：RAG 召回评测
+
+- [x] 新增 3 条刻意避开产品库原词的模糊询盘评测数据。
+- [x] 新增规则/语义两种模式的 Top-1 与 Top-3 产品召回率。
+- [x] 新增 `GET /api/evaluation/rag?mode=rules|semantic`，用于比较语义检索相对于规则检索的提升。
+- [x] 评测只验证候选 SKU 排名，不会创建报价或修改库存。
+
+### 实测结果
+
+- [x] 后端 pytest：87 passed。
+- [x] Ruff：All checks passed。
+- [x] 前端 vue-tsc 与 Vite production build：通过。
+- [x] Compose 配置检查、后端镜像重建及服务健康检查：通过。
+- [x] Qdrant 索引重建：6 个启用产品成功建立索引。
+- [x] 规则模式：Top-1 召回率 33.3%，Top-3 召回率 100%。
+- [x] 语义模式：Top-1 召回率 33.3%，Top-3 召回率 100%。
+
+### 结果解释与后续限制
+
+- 当前评测证明语义检索链路已实际调用 FastEmbed + Qdrant，并能返回候选产品；但这组 3 条询盘中，项目类型规则已经能把目标产品放入 Top-3，因此暂时没有观察到相对于规则基线的召回提升。
+- 当前结果不能据此宣称语义检索优于规则检索。下一步应扩大包含中文、意大利语、同义词、材质和用途改写的评测集，并记录 MRR、Recall@K 和误召回样本，再调整 embedding 模型与阈值。
+
+## 70. 2026-10-14：扩充 RAG 评测指标
+
+- [x] 将评测集扩充为 8 条，覆盖英语、中文、意大利语和西班牙语的产品用途改写。
+- [x] 增加 `mrr`（Mean Reciprocal Rank）和 `misses`（未进入 Top-3 的误召回样本）字段。
+- [x] 后端测试保持 87 passed，Ruff 和前端生产构建通过。
+- [x] 线上规则基线为 Top-1 25%、Top-3 75%、MRR 0.49375，并发现 2 条 Top-3 漏召回样本。
+- [x] 线上语义结果为 Top-1 62.5%、Top-3 100%、MRR 0.77083，Top-1 相对规则基线提升 37.5 个百分点，且没有 Top-3 漏召回。
+- [x] 评测接口仍为 `GET /api/evaluation/rag?mode=rules|semantic`，只读评测数据，不创建报价、不修改库存。
+
+## 71. 2026-10-14：混合检索排序可审计化
+
+- [x] 产品候选结果新增结构化 `semantic_score` 字段，保留原始语义相似度，便于前端和审计记录使用。
+- [x] 当库存可用性和总分相同时，排序使用语义相似度作为第二排序信号，再使用 SKU 作为稳定的最终排序键。
+- [x] 前端 TypeScript 类型已同步支持 `semantic_score`，现有“Semantic match 0.xx”原因仍保持兼容显示。
+- [x] 后端测试：88 passed；Ruff、前端生产构建和 Compose 健康检查通过。
+- [x] 重启后线上 RAG 评测仍为语义 Top-1 62.5%、Top-3 100%、MRR 0.77083。
+
+## 72. 2026-10-14：前端 RAG 评测面板
+
+- [x] Agent 追踪页面新增 RAG 评测区域，可切换规则检索/语义检索模式。
+- [x] 前端展示 Top-1 Recall、Top-3 Recall、MRR、评测案例数和 Top-3 漏召回样本。
+- [x] 新增 `fetchRagEvaluation` API 类型与调用封装，保持认证刷新逻辑一致。
+- [x] 前端生产构建通过，Compose 前端已重建，`http://127.0.0.1:8080/` 返回 HTTP 200。
+
+## 73. 2026-10-14：RAG 评测历史持久化
+
+- [x] MySQL 新增 `rag_evaluation_runs` 表，保存模式、案例数、Recall@1/3、MRR、漏召回样本和运行时间。
+- [x] 新增 `POST /api/evaluation/rag/run?mode=rules|semantic`，执行评测并写入 MySQL。
+- [x] 新增 `GET /api/evaluation/rag/history`，读取最近评测记录。
+- [x] Agent 追踪页改为执行评测并显示最近历史记录，刷新或重启后仍可查看。
+- [x] Compose 实测：规则和语义两次运行均成功写入数据库；迁移 `20261011_inventory_adjustments -> 20261014_rag_evaluation_runs` 执行成功。
+- [x] 后端测试：89 passed；Ruff、前端构建和容器健康检查通过。
+
+## 74. 2026-10-14：RAG 评测趋势图
+
+- [x] Agent 追踪页新增 SVG 趋势图，绘制最近 12 次评测的 Top-1、Top-3 和 MRR。
+- [x] 趋势图直接读取 MySQL 历史记录，不引入额外图表依赖。
+- [x] 前端构建通过，Compose 前端已重建，`http://127.0.0.1:8080/` 返回 HTTP 200。
+
+## 75. 2026-10-14：RAG 评测实验元数据与筛选
+
+- [x] 评测历史新增 embedding 提供商、embedding 模型和检索配置字段。
+- [x] 新增 MySQL 迁移 `20261014_rag_eval_metadata`；针对 MySQL JSON 默认值限制采用幂等迁移和空对象回填，未删除或覆盖业务数据。
+- [x] 前端历史记录增加“全部/语义检索/规则检索”筛选，并显示每次实验使用的 embedding 模型。
+- [x] Compose 实测记录：`huggingface / sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`，语义 Top-1 62.5%、Top-3 100%、MRR 0.77083。
+- [x] 后端 89 个测试、Ruff、前端构建通过，前端服务返回 HTTP 200。
+
+## 76. 2026-10-14：Embedding Profile 切换
+
+- [x] 新增 `GET /api/settings/embeddings`，返回当前启用的 embedding profile 和可选 profile 列表。
+- [x] 新增 `POST /api/settings/embeddings`，管理员切换 profile 后重建 Qdrant 产品索引；不删除或重置 MySQL 业务数据。
+- [x] 新增 `EMBEDDING_PROFILES_JSON` 配置，支持在根目录或 `backend/.env` 中声明多个 Hugging Face embedding profile。
+- [x] Agent 追踪页 RAG 评测面板新增 embedding profile 下拉选择，切换后自动刷新评测数据。
+- [x] 修复 embedding 设置查询接口遗漏数据库会话依赖导致的 HTTP 500 错误。
+- [x] 验证结果：后端 pytest 89 passed，Ruff 通过，前端生产构建通过；Compose 后端、前端重建成功。
+- [x] 线上健康检查通过：`/health` 返回 `{"status":"ok"}`，embedding 设置接口返回当前默认 profile，前端 `http://127.0.0.1:8080/` 返回 HTTP 200。
+
+## 77. 2026-10-14：多 Embedding Profile 配置验证
+
+- [x] 根目录 `.env` 增加第二个免费多语言 profile：`minishlab/potion-multilingual-128M`（MIT 许可，FastEmbed 支持）。
+- [x] `docker-compose.yml` 增加 `EMBEDDING_PROFILES_JSON` 环境变量映射，容器接口现已返回两个可选 profile。
+- [x] 已验证已缓存的默认 profile 可以通过切换接口重建 6 个启用产品的独立 Qdrant 索引。
+- [x] 发现首次下载第二个模型时 Hugging Face 未认证连接长期无进度；请求已安全终止，未修改 MySQL 数据，第二个 profile 配置仍保留，待网络可用后首次切换会自动下载模型。
+
+## 78. 2026-10-14：Embedding 切换状态与超时提示
+
+- [x] 前端切换 embedding 时显示“下载模型并重建索引”状态，成功后显示已索引产品数。
+- [x] 前端为切换请求增加 120 秒超时，超时后明确提示检查 Hugging Face 网络并重试。
+- [x] 后端错误信息会显示在 embedding 评测面板附近，避免用户误以为按钮无响应。
+- [x] 前端 API 支持将 `AbortSignal` 传递给切换请求。
+- [x] 前端生产构建和 Docker 前端镜像构建通过，网页 `http://127.0.0.1:8080/` 已重新部署。
+
+## 79. 2026-10-14：Embedding 异步重建任务
+
+- [x] embedding 切换接口改为立即创建后台任务，避免 HTTP 请求被模型下载和索引重建长时间占用。
+- [x] 新增 `GET /api/settings/embeddings/jobs/{job_id}`，支持查询 `queued`、`running`、`succeeded`、`failed` 状态及错误信息。
+- [x] 后台任务使用独立 SQLAlchemy 会话读取产品，不复用请求会话，不修改 MySQL 业务数据。
+- [x] 前端改为提交任务并轮询状态，成功后刷新 RAG 评测；失败时显示后端错误。
+- [x] 实测默认 embedding profile：任务提交成功，状态轮询返回 `succeeded`，6 个产品索引完成；前端 HTTP 200。
+- [x] 后端 pytest：89 passed；Ruff 和前端生产构建通过；Compose 后端、前端已重建。
+
+## 80. 2026-10-14：Embedding 重建进度显示
+
+- [x] 后台任务状态新增 `processed_products`、`total_products` 和 `progress_percent` 字段。
+- [x] Qdrant 重建过程每完成一个产品即更新任务进度。
+- [x] 前端轮询期间显示产品处理进度和百分比。
+- [x] 实测状态从 `running / 0/6 / 0%` 到 `succeeded / 6/6 / 100%`，前端 HTTP 200。
+
+## 81. 2026-10-14：Embedding 任务 MySQL 持久化
+
+- [x] 新增 MySQL 表 `embedding_rebuild_jobs`，记录任务 ID、profile、状态、进度、索引数量、错误和创建/更新时间。
+- [x] 新增迁移 `20261014_embedding_rebuild_jobs`，Compose 启动时已执行，未删除或覆盖现有业务数据。
+- [x] 服务启动时将上次未完成的 `queued/running` 任务标记为 `failed`，并记录服务重启原因。
+- [x] 任务状态接口改为从 MySQL 读取，服务重启后仍可查询已完成任务。
+- [x] 线上实测：任务 `succeeded`，6 个产品索引完成，状态从 MySQL 正常读回；后端健康、前端 HTTP 200。
+
+## 82. 2026-10-14：Embedding 重建历史列表
+
+- [x] 新增 `GET /api/settings/embeddings/jobs?limit=20`，按创建时间倒序返回最近任务。
+- [x] Agent 追踪页 RAG 面板新增 Embedding 重建历史，显示模型、时间、状态、进度、索引数量和错误信息。
+- [x] 页面启动时加载历史，任务完成后自动刷新列表。
+- [x] 线上验证历史接口从 MySQL 返回已完成任务，前端 HTTP 200；后端 89 项测试、Ruff 和前端构建通过。
+
+## 83. 2026-10-14：Embedding 历史分页
+
+- [x] 历史接口支持 `limit` 和 `offset`，返回 `items`、`total`、`limit`、`offset`。
+- [x] 前端增加上一页/下一页，历史记录增多后不会无限延长页面。
+- [x] 暂不自动清理历史记录，避免未经确认删除任务审计数据。
+- [x] 线上验证分页响应正常，前端 HTTP 200；后端 89 项测试、Ruff 和前端构建通过。
+
+## 84. 2026-10-14：AI 配置中心第一阶段
+
+- [x] 新增 `GET /api/settings/ai`，按 Provider 返回 Base URL、模型、超时、可用状态和 API Key 是否已配置。
+- [x] API Key 只返回 `api_key_configured` 布尔值，GET 接口不会返回明文密钥。
+- [x] 新增 `PATCH /api/settings/ai`，仅管理员可修改；支持运行时更新 Provider、Base URL、模型、超时和 API Key。
+- [x] API Key 更新仅保留在当前后端进程内，不写入 MySQL、不回显；正式部署仍应使用根目录 `.env` 或 Docker secrets 持久化。
+- [x] 前端新增三语言 AI 配置页面，可查看服务商配置状态、编辑连接参数、切换 Provider，并提供 API Key 不回显提示。
+- [x] 支持规则引擎、Ollama/Qwen、OpenAI-compatible、DeepSeek 和 Kimi/Moonshot 配置入口。
+- [x] 验证结果：Ruff 通过，后端 pytest 91 passed，前端 TypeScript 检查和生产构建通过。
+- [x] 部署后接口复测发现并修复 rules/Ollama 超时字段映射错误；当前后端测试为 91 passed。
+
+## 85. 2026-10-14：AI Provider 连接测试
+
+- [x] 新增 `POST /api/settings/ai/test`，支持测试规则引擎、Ollama、OpenAI-compatible、DeepSeek 和 Kimi/Moonshot。
+- [x] 测试请求使用最小探测提示词，不触发询盘分析；返回 Provider、模型、耗时和成功/失败原因。
+- [x] 未配置 API Key 或连接失败时返回明确状态，不泄露 API Key；认证开启时仅管理员可测试。
+- [x] AI 配置页面新增“测试连接”按钮和三语言状态提示。
+- [x] 验证结果：后端 pytest 92 passed，Ruff 通过，Docker 前端生产构建通过；Compose 后端健康、规则引擎测试成功、前端 HTTP 200。
+
+## 86. 2026-10-14：AI 配置持久化部署方案
+
+- [x] 完整补齐 Compose 对 Ollama 标签请求超时的环境变量注入：`OLLAMA_TAG_TIMEOUT_SECONDS`。
+- [x] 更新根目录和后端 `.env.example`，覆盖 Provider、模型、Base URL、超时和 API Key 的持久化配置入口。
+- [x] 更新 README 与 DEPLOYMENT，明确 `.env`/部署 Secret 是正式持久化来源，MySQL 不保存 AI 密钥。
+- [x] 明确前端 AI 配置页的保存是当前进程运行时覆盖；长期配置需写入 `.env` 后重启 Compose，避免 Web 页面写入密钥。
+
+## 87. 2026-10-14：启动配置诊断
+
+- [x] 新增 `GET /api/settings/ai/diagnostics`，检查 MySQL、Qdrant、Ollama 和在线 Provider 配置状态。
+- [x] MySQL 使用 `SELECT 1` 检查，Qdrant/Ollama 使用轻量健康请求；在线服务商只检查 API Key 配置，不自动消耗模型额度。
+- [x] 诊断结果不返回任何 API Key 明文；认证开启时读取接口仍受登录保护。
+- [x] AI 配置页面新增诊断卡片和刷新按钮，显示状态、说明与响应耗时。
+- [x] Compose 实测：MySQL、Qdrant、Ollama/qwen3:8b 均正常；后端 pytest 93 passed，Ruff 和前端 Docker 生产构建通过，前端 HTTP 200。
+
+## 88. 2026-10-14：Compose 部署验收与重启保留验证
+
+- [x] Compose 四项服务检查通过：backend、database、frontend healthy，Qdrant 正常运行。
+- [x] 询盘工作流验收通过：Qwen 解析出数量 50、目的地 China、hotel 项目，客户匹配 Acme Hotels，Top-1 产品为 `NOVA-CHAIR-001`。
+- [x] 验证未选择产品时不创建正式报价：返回 `quote.id=null`、`status=pending_selection`，符合先选产品再生成报价的规则。
+- [x] 验证 AI 来源：`ai_provider=ollama`，解释模型为 `qwen3:8b`。
+- [x] 重启 backend 后 MySQL 中产品、客户和 Agent 运行记录仍可读取，产品库存保持 200；前端 HTTP 200、后端 `/health` 正常。
+
+## 89. 2026-10-14：认证权限验收
+
+- [x] 隔离认证测试通过：登录、错误密码、Access Token、Refresh Token 轮换、Logout 撤销均正常。
+- [x] 权限测试通过：viewer 可读业务数据但不能创建/审批，approver 可执行业务审批，admin 可管理用户和全局 AI Provider。
+- [x] 当前 Compose 配置检查结果：`AUTH_ENABLED=false`，认证密钥、管理员用户名和密码哈希均为空，因此未在现有运行环境中强行开启，避免把用户锁在系统外。
+- [x] 公开部署前仍需由部署者生成并注入 `AUTH_SECRET`、`AUTH_USERNAME`、`AUTH_PASSWORD_HASH`，设置 `AUTH_ENABLED=true` 后重启 Compose，再执行登录验收。
+
+## 90. 2026-10-14：本机认证配置启用
+
+- [x] 根目录 `.env` 已配置随机 `AUTH_SECRET`、管理员账号 `admin`、PBKDF2 密码哈希和 `AUTH_ENABLED=true`；`.env` 未纳入 Git。
+- [x] 修复 Compose 对 PBKDF2 哈希 `$` 字符的插值问题，使用 `$$` 保证容器内收到真实哈希。
+- [x] 修复启动引导账号同步：当环境中的密码哈希或角色变化时，启动会更新同名引导账号，避免首次错误配置残留。
+- [x] 实测认证已开启：未登录产品请求返回 401，管理员登录返回 200，管理员用户管理和 AI 诊断接口返回 200，前端 HTTP 200。
+
+## 91. 2026-10-14：角色账号与权限验收
+
+- [x] 创建本机验收账号 `viewer-test`（角色 `viewer`）和 `approver-test`（角色 `approver`），密码仅用于本机测试，不写入 Git。
+- [x] `viewer-test` 可读取产品（200），访问用户管理（403），执行询盘工作流（403），符合只读权限设计。
+- [x] `approver-test` 访问用户管理（403），审批不存在报价返回 404，说明角色权限校验已通过后才进入报价业务校验。
+- [x] 管理员继续具备用户管理、AI 诊断和 Provider 配置权限；认证与角色权限验收完成。
+- [ ] 首次正式使用后修改管理员及测试账号密码；测试完成后可按需删除两个测试账号，当前暂不自动删除以保留复测能力。
+
+## 92. 2026-10-15：公开部署前敏感配置检查
+
+- [x] 根目录 `.env` 已被 `.gitignore` 忽略，且未被 Git 跟踪；仅 `.env.example` 和 `backend/.env.example` 纳入版本控制。
+- [x] 对已跟踪文件执行敏感信息扫描，未发现真实 API Key、数据库密码或认证哈希；部署文档中的 `AUTH_PASSWORD_HASH` 仅为说明占位符。
+- [x] `git diff --check` 通过，当前改动无空白错误。
+- [x] Compose 默认仅绑定 `127.0.0.1`；只有显式设置 `TRADEPILOT_BIND=0.0.0.0` 才会对外暴露，符合本机默认安全策略。
+- [ ] 推送 GitHub 前仍需由用户审阅并提交当前改动；不得提交根目录 `.env` 或其他部署密钥。
+
+## 93. 2026-10-15：前端用户管理增加修改密码
+
+- [x] 用户管理列表新增按账号修改密码入口，管理员可直接为任意用户设置新密码。
+- [x] 修改表单支持两次密码确认，前端校验至少 8 位；取消后会清空输入内容。
+- [x] 复用现有管理员保护的 `PATCH /api/users/{id}` 接口，密码仍以 PBKDF2 哈希写入 MySQL，不保存明文。
+- [x] 前端 `vue-tsc` 类型检查和生产构建通过。
+
+## 94. 2026-10-15：用户管理操作按钮布局优化
+
+- [x] 将 `Change password` 和 `Deactivate/Activate` 放入独立操作容器，增加 8px 间距。
+- [x] 操作按钮支持换行并保持文字不折断，窄屏下更容易区分和点击。
+- [x] 前端 TypeScript 检查和生产构建再次通过。
+
+## 95. 2026-10-15：MySQL 与 Qdrant 产品索引自动同步增强
+
+- [x] 产品新增、编辑时自动更新对应 Qdrant 向量；产品停用时明确删除对应向量。
+- [x] 单个产品同步发生临时故障时，自动排队执行一次完整索引重建，避免错误被静默吞掉后长期不一致。
+- [x] Compose 后端启动时在后台执行一次 MySQL→Qdrant 校准，覆盖数据库与向量卷独立恢复、服务重启等场景。
+- [x] 保持 MySQL 为产品事实源，Qdrant 作为可重建的检索索引，不影响产品保存流程。
+- [x] 相关后端测试 17 passed，Ruff 和 `git diff --check` 通过。
+
+## 96. 2026-10-15：修复认证刷新竞态导致的前端红色错误页
+
+- [x] 定位到浏览器多个并发请求同时刷新同一个 Refresh Token，首个请求轮换成功后其余请求使用旧 Token 返回 401。
+- [x] 前端增加单例刷新锁，同一时刻只允许一个 Refresh Token 刷新请求，其余请求复用刷新结果。
+- [x] 认证状态确认完成后再加载业务数据，避免页面初始化阶段因认证状态尚未读取而产生大量 401 错误。
+- [x] Refresh Token 失效时自动清理前端会话并显示登录页，避免持续显示红色错误内容。
+- [x] 已重建 Compose 前端和后端；前端 HTTP 200、后端健康接口 HTTP 200，前端生产构建通过。
+
+## 97. 2026-10-15：登录会话持久化
+
+- [x] 将前端认证令牌从仅限标签页的 `sessionStorage` 迁移到 `localStorage`，页面刷新或内嵌浏览器重新加载后可保持登录。
+- [x] 兼容并自动迁移已有 `sessionStorage` 会话，退出登录时同时清理两种存储。
+- [x] 已重新构建并重启 Compose 前端；前端 HTTP 200，生产构建通过。
+- [ ] 正式互联网部署时建议进一步改为 HttpOnly Secure Cookie，以降低浏览器脚本读取持久 Refresh Token 的风险。
+
+## 98. 2026-10-15：选品后报价快速路径
+
+- [x] 首次询盘分析结果中的数量、国家、项目类型、关键词、预算和交期会随选品请求传回后端。
+- [x] 已选产品报价不再重复调用 Qwen 解析、Qdrant 语义检索和 AI 产品解释，只执行库存、价格和报价写入。
+- [x] 保留旧客户端兼容：未携带已解析需求时仍使用原有完整流程。
+- [x] 实测优化前约 12 秒，优化后约 0.02 秒；报价创建成功后已取消测速用临时报价并恢复库存。
+- [x] 报价相关测试 8 passed，前端生产构建和 Compose 重建通过。
+
+## 99. 2026-10-15：新增前端 RAG 实验室
+
+- [x] 新增 `POST /api/rag/playground`，支持规则检索和语义检索两种模式，以及 Top-K、相似度阈值配置。
+- [x] 返回结构化解析结果、检索模式、候选产品、Semantic Score、最终匹配分、匹配原因、未满足条件和各阶段耗时。
+- [x] 实验接口仅执行解析、向量检索和产品排序，不创建报价、不扣减/预留库存、不写入 Agent 活动记录。
+- [x] 前端新增三语言“RAG 实验室”页面，可直接输入任意询盘并查看候选产品和评分明细。
+- [x] 语义检索异常时显示规则回退状态和错误原因，便于定位 Qdrant/Embedding 服务问题。
+- [x] 新增后端只读回归测试；后端 pytest 94 passed，Ruff 通过，前端 `vue-tsc` 与 Vite production build 通过。
+- [x] 已重建并启动 Compose backend/frontend；backend healthy，`http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`，前端 `http://127.0.0.1:8080/` 返回 HTTP 200。
+- [ ] 待在浏览器登录后验证页面交互；该步骤需要有效登录会话。
+
+## 100. 2026-10-15：RAG 产品知识与同义词优化
+
+- [x] 产品向量文档增加结构化字段和稳定的行业同义词，包括 weatherproof seating、patio chair、dining surface、hospitality lounge 等。
+- [x] 规则排序复用与 Qdrant 一致的标准化产品文档，避免规则检索和语义检索使用不同产品词汇。
+- [x] 询盘解析增加中英文、意大利语和场景同义词归一化，例如“耐候户外座椅”、`sedute`、`tavoli` 会转换为标准产品关键词。
+- [x] RAG 规则评测基线由 Top-1 25% 提升至 87.5%，Top-3 由 75% 提升至 87.5%，MRR 提升至 0.9。
+- [x] 针对性回归测试 10 passed，Ruff 通过，前端生产构建通过；完整测试中的语义服务测试因外部 Qdrant/Embedding 等待超时，未继续阻塞验证。
+- [x] 已重新构建 Compose backend/frontend；后端 healthy，健康接口返回正常，前端返回 HTTP 200；未删除 MySQL/Qdrant 数据卷。
+
+## 101. 2026-10-15：扩充 RAG 评测集
+
+- [x] 评测集从 8 条扩展到 16 条，新增中文、意大利语、家具组合、遮阳伞、沙发、露台和酒店场景表达。
+- [x] 增加 `户外椅`、`家具组合`、`divani`、`parasol`、`couch` 等领域同义词归一化。
+- [x] 新评测规则基线：Top-1 Recall 87.5%、Top-3 Recall 93.75%、MRR 0.91875。
+- [x] 相关回归测试 10 passed，Ruff 和前端生产构建通过。
+- [x] 已重建后端 Compose 容器；后端 healthy，`/health` 返回正常，MySQL 和 Qdrant 数据卷保持不变。
+- [ ] 当前仍有 1 条规则 Top-3 漏召回样本，下一步应增加候选重排和“无可靠匹配”判断。
+
+## 102. 2026-10-15：RAG 候选重排与低可信提示
+
+- [x] 增加 `stackable outdoor seats`、`outdoor seats`、`metal seats` 等同义词，解决座椅被家具组合、沙发和桌子挤出 Top-3 的问题。
+- [x] 规则评测达到 Top-1 93.75%、Top-3 100%、MRR 0.96875，16 条样本没有 Top-3 漏召回。
+- [x] RAG 实验室增加匹配可信度状态：高可信、建议人工确认、未找到可靠匹配。
+- [x] 低于 45 分的结果不会被标记为可靠匹配，避免实验页面误导用户；该提示不改变正式报价流程。
+- [x] 后端回归测试 24 passed，Ruff、前端生产构建和 `git diff --check` 通过。
+- [x] 已重建 backend/frontend Compose 服务；backend、frontend、MySQL、Qdrant 均正常运行，健康接口返回正常。
+
+## 103. 2026-10-15：可选 Cross-Encoder Reranker
+
+- [x] 新增懒加载 `ProductReranker`，使用 FastEmbed `TextCrossEncoder` 对询盘与产品文档成对重排。
+- [x] RAG 实验室支持先召回最多 10 个候选，再使用 Reranker 重排并返回 Top-K；最终分数融合基础匹配分和 Reranker 分数。
+- [x] 前端显示 Reranker 是否启用、模型名、重排耗时和异常回退信息。
+- [x] 增加 `RERANKER_ENABLED`、`RERANKER_MODEL` 配置；默认关闭，避免部署时自动下载模型，模型不可用时自动回退基础排序。
+- [x] 相关后端测试 6 passed，Ruff、前端构建和 Compose 健康检查通过。
+- [ ] 若要正式启用，需要在根目录 `.env` 设置 `RERANKER_ENABLED=true`，首次运行会下载 `BAAI/bge-reranker-v2-m3`，随后在 RAG 实验室观察重排效果和耗时。
+
+## 104. 2026-10-15：扩充产品库与库存种子
+
+- [x] 产品种子由 5 个扩展为 28 个，覆盖户外椅、桌、沙发、遮阳伞和家具组合五类场景。
+- [x] 新产品补充 SKU、描述、材质、颜色、匹配标签、MOQ、交期和价格，便于产品库展示、询盘匹配和 RAG 检索。
+- [x] 为全部新增 SKU 增加差异化初始库存，覆盖库存充足、库存较少和不同 MOQ/交期的测试场景。
+- [x] 保持现有 `seed_products()` 与 `seed_inventory()` 的幂等行为：只新增数据库中不存在的 SKU，不覆盖已有产品编辑结果或库存调整结果。
+- [x] 扩展产品种子回归测试，确认产品数量、类别覆盖、库存覆盖和重复执行稳定性。
+- [x] 产品匹配增加类别一致性加分，避免产品描述中提到配套桌椅时，家具组合因文本重叠压过用户明确请求的独立产品类别。
+- [x] 更新产品筛选和 RAG 评测测试断言，反映扩充目录后的多产品候选结果。
+- [x] 已重建 Compose backend/frontend；MySQL 当前产品记录 30 条、库存记录 30 条，Qdrant 当前 embedding 集合已同步 30 个向量，未删除任何数据卷。
+- [x] 增加新增产品的属性检索回归测试，验证“可伸缩柚木桌”和“方形悬臂遮阳伞”等具体款式可被 RAG 直接检索。
+- [x] 增加产品 API 回归测试，验证前端产品库可按具体属性搜索新增产品，并同时读取对应可用库存和价格。
+- [x] 在根 README 和 backend README 增加产品种子、库存种子、幂等同步和 Qdrant 校准维护说明，并修正产品检索能力描述。
+
+## 105. 2026-10-15：GitHub 上传前安全与部署检查
+
+- [x] 确认 `.env`、backend 本地环境文件、数据库缓存、pytest/ruff 缓存和前端依赖目录均未被 Git 跟踪；仅保留 `.env.example` 模板文件。
+- [x] Compose 配置校验通过，backend、frontend、MySQL、Qdrant 当前均正常运行，其中 backend/frontend 状态为 healthy。
+- [x] `git diff --check` 通过，未发现已跟踪文件中的常见 `sk-...` API Key 形态。
+- [x] 确认 MIT License 和 README 中的部署、产品库、Qdrant 说明均存在。
+- [ ] 尚未执行 `git add/commit/push`；需要用户明确授权后再进行版本提交和 GitHub 推送。

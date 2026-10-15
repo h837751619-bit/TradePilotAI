@@ -79,3 +79,38 @@ class AgentRun(Base):
     inquiry_text: Mapped[str] = mapped_column(Text)
     steps: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+
+
+class RagEvaluationRun(Base):
+    __tablename__ = "rag_evaluation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    embedding_provider: Mapped[str] = mapped_column(String(64), default="rules")
+    embedding_model: Mapped[str] = mapped_column(String(200), default="rules")
+    retrieval_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    cases: Mapped[int] = mapped_column(Integer)
+    evaluated_cases: Mapped[int] = mapped_column(Integer)
+    top1_recall: Mapped[float] = mapped_column(Float)
+    top3_recall: Mapped[float] = mapped_column(Float)
+    mrr: Mapped[float] = mapped_column(Float)
+    misses: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True, index=True)
+
+
+class EmbeddingRebuildJob(Base):
+    __tablename__ = "embedding_rebuild_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    profile_id: Mapped[str] = mapped_column(String(255))
+    embedding_provider: Mapped[str] = mapped_column(String(64))
+    embedding_model: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    processed_products: Mapped[int] = mapped_column(Integer, default=0)
+    total_products: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0)
+    indexed_products: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from tradepilot.customer import Customer  # noqa: F401
 from tradepilot.db import Base
 from tradepilot.inventory import Inventory  # noqa: F401
-from tradepilot.models import AgentRun, Product, QuoteRecord  # noqa: F401
+from tradepilot.models import AgentRun, EmbeddingRebuildJob, Product, QuoteRecord  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

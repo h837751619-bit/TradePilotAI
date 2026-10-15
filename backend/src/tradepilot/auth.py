@@ -83,3 +83,11 @@ def seed_auth_user(session: Session, username: str, password_hash: str, role: st
     if user is None:
         session.add(User(username=username, password_hash=password_hash, role=role, is_active=True))
         session.commit()
+    elif user.password_hash != password_hash or user.role != role:
+        # The environment-backed bootstrap account is intentionally reconciled
+        # on startup so a corrected deployment secret can repair an interrupted
+        # first boot without requiring direct database access.
+        user.password_hash = password_hash
+        user.role = role
+        user.is_active = True
+        session.commit()

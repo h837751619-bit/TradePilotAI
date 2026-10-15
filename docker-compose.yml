@@ -17,12 +17,21 @@ services:
       retries: 10
       start_period: 30s
 
+  qdrant:
+    image: qdrant/qdrant:v1.12.6
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - tradepilot_qdrant_data:/qdrant/storage
+
   backend:
     build: ./backend
     ports:
       - "${TRADEPILOT_BIND:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./data:/data:ro
+      - tradepilot_embedding_cache:/models
     environment:
       APP_ENV: docker
       DATABASE_URL: mysql+pymysql://${MYSQL_USER:-tradepilot}:${MYSQL_PASSWORD}@database:3306/${MYSQL_DATABASE:-tradepilot}?charset=utf8mb4
@@ -32,6 +41,17 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
       OLLAMA_THINK: ${OLLAMA_THINK:-false}
+      OLLAMA_TAG_TIMEOUT_SECONDS: ${OLLAMA_TAG_TIMEOUT_SECONDS:-90}
+      SEMANTIC_SEARCH_ENABLED: ${SEMANTIC_SEARCH_ENABLED:-false}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-huggingface}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      EMBEDDING_PROFILES_JSON: ${EMBEDDING_PROFILES_JSON:-}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-tradepilot_products}
+      RAG_EXPLANATIONS_ENABLED: ${RAG_EXPLANATIONS_ENABLED:-true}
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-false}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      FASTEMBED_CACHE_PATH: /models
       OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
       OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-https://api.openai.com/v1}
       OPENAI_COMPATIBLE_MODEL: ${OPENAI_COMPATIBLE_MODEL:-gpt-4o-mini}
@@ -71,3 +91,5 @@ services:
 
 volumes:
   tradepilot_mysql_data:
+  tradepilot_qdrant_data:
+  tradepilot_embedding_cache:

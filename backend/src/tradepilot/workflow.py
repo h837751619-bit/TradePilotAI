@@ -24,8 +24,10 @@ def create_quote_from_inquiry(
     customer_name: str = "",
     ai_provider: AIProvider | None = None,
     selected_sku: str | None = None,
+    semantic_matches: dict[str, float] | None = None,
+    parsed_inquiry: InquiryRequirements | None = None,
 ) -> InquiryQuoteResult:
-    inquiry = parse_inquiry_with_provider(inquiry_text, ai_provider)
+    inquiry = parsed_inquiry or parse_inquiry_with_provider(inquiry_text, ai_provider)
     if inquiry.quantity is None:
         raise ValueError("Inquiry quantity is required")
     if selected_sku:
@@ -34,7 +36,7 @@ def create_quote_from_inquiry(
             raise LookupError("Selected product not found")
         sku = product.sku
     else:
-        if not inquiry.product_keywords:
+        if not inquiry.product_keywords and not semantic_matches:
             raise LookupError("No product keywords found")
         candidates = rank_product_candidates(
             session,
@@ -43,6 +45,7 @@ def create_quote_from_inquiry(
             inquiry.project_type,
             budget_usd=inquiry.budget_usd,
             max_lead_time_days=inquiry.max_lead_time_days,
+            semantic_matches=semantic_matches,
         )
         matching = [candidate for candidate in candidates if candidate["reasons"]]
         if not matching:
