@@ -1950,4 +1950,4 @@ Ruff：All checks passed
 - [x] Compose 配置校验通过，backend、frontend、MySQL、Qdrant 当前均正常运行，其中 backend/frontend 状态为 healthy。
 - [x] `git diff --check` 通过，未发现已跟踪文件中的常见 `sk-...` API Key 形态。
 - [x] 确认 MIT License 和 README 中的部署、产品库、Qdrant 说明均存在。
-- [ ] 尚未执行 `git add/commit/push`；需要用户明确授权后再进行版本提交和 GitHub 推送。
+- [x] 已完成 `git add/commit/push`；提交 `92c22e1` 已推送到 `origin/main`（`https://github.com/h837751619-bit/TradePilotAI.git`）。
