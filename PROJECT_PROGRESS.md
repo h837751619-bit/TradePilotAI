@@ -1963,3 +1963,7 @@ Ruff：All checks passed
 - [x] 补充当前 30 个演示产品、MySQL/Qdrant 持久化、规则引擎默认值和语义检索默认关闭说明。
 - [x] 补充 AI Provider、AI 设置、RAG Playground、库存调整和 RAG 评测接口说明。
 - [x] 补充 RAG 数据集、可选 Cross-Encoder Reranker 和其默认关闭行为说明。
+
+## 108. 2026-10-18：修正中文询盘字段翻译
+
+- [x] 将询盘工作台中文界面的“产品信号”修正为“产品型号”，与字段实际展示的产品关键词/型号语义一致。
